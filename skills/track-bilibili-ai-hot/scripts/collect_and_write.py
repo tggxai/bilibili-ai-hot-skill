@@ -71,6 +71,70 @@ NEGATIVE_ONLY = re.compile(
     r"近期.{0,30}(?:AI|人工智能).{0,20}作品",
     re.IGNORECASE,
 )
+THREE_C_PATTERNS = [
+    (
+        "手机通信",
+        re.compile(
+            r"手机|平板|iPhone|iPad|Android|安卓|鸿蒙|HarmonyOS|Pixel|Galaxy|"
+            r"折叠屏|路由器|Wi-?Fi|基带|骁龙|天玑|红米|荣耀|OPPO|vivo|一加|真我|魅族",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "电脑硬件",
+        re.compile(
+            r"电脑|笔记本|台式机|装机|显卡|GPU|CPU|处理器|主板|内存|硬盘|SSD|"
+            r"NAS|MacBook|MateBook|Mac\s*mini|Mac\s*Studio|AI\s*PC|芯片|英伟达|NVIDIA|"
+            r"AMD|Intel|英特尔|显示器",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "影像影音",
+        re.compile(
+            r"相机|镜头|摄像机|无人机|GoPro|大疆|DJI|麦克风|耳机|音箱|音响|"
+            r"HiFi|电视|投影仪",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "外设游戏硬件",
+        re.compile(
+            r"键盘|鼠标|外设|游戏机|掌机|Switch|PlayStation|PS5|Xbox|手柄|"
+            r"散热器|充电器|充电宝|拓展坞|扩展坞",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "智能穿戴家居",
+        re.compile(
+            r"智能手表|智能手环|智能穿戴|智能家居|米家|HomeKit|扫地机器人|"
+            r"智能门锁|空气净化器|电子书|Kindle|AR眼镜|VR眼镜|Vision\s*Pro",
+            re.IGNORECASE,
+        ),
+    ),
+]
+THREE_C_CATEGORY_HINTS = {"数码", "极客DIY"}
+THREE_C_WEAK_TERM = re.compile(r"手机|平板|电脑|镜头|麦克风|耳机|音箱|音响|电视|投影仪", re.IGNORECASE)
+THREE_C_STRONG_TERM = re.compile(
+    r"iPhone|iPad|Android|安卓|鸿蒙|HarmonyOS|Pixel|Galaxy|折叠屏|路由器|Wi-?Fi|"
+    r"MacBook|MateBook|Mac\s*mini|Mac\s*Studio|AI\s*PC|显卡|GPU|CPU|处理器|主板|内存|硬盘|SSD|NAS|"
+    r"相机|摄像机|无人机|GoPro|大疆|DJI|HiFi|游戏机|掌机|Switch|PlayStation|PS5|Xbox|"
+    r"智能手表|智能手环|智能穿戴|智能家居|HomeKit|扫地机器人|智能门锁|空气净化器|"
+    r"Kindle|AR眼镜|VR眼镜|Vision\s*Pro",
+    re.IGNORECASE,
+)
+THREE_C_PRODUCT_CONTEXT = re.compile(
+    r"评测|测评|开箱|参数|配置|性能|体验|发布|新品|选购|推荐|对比|实测|上手|"
+    r"拆解|维修|内存|屏幕|续航|价格|价位|系统|芯片|影像|拍照|充电|散热|装机",
+    re.IGNORECASE,
+)
+THREE_C_COMPUTER_OVERRIDE = re.compile(
+    r"电脑|笔记本|台式机|装机|MacBook|MateBook|Mac\s*mini|Mac\s*Studio|AI\s*PC|"
+    r"显卡|主板|硬盘|SSD|NAS|显示器",
+    re.IGNORECASE,
+)
+THREE_C_SOFTWARE_CONTEXT = re.compile(r"手机游戏|手游|端游|网游", re.IGNORECASE)
 
 
 class CollectionError(RuntimeError):
@@ -297,6 +361,45 @@ def classify(video: Video, tags: list[str]) -> tuple[str | None, str]:
     return direction, "；".join(reasons)
 
 
+def classify_three_c(video: Video, tags: list[str]) -> tuple[str | None, str]:
+    """Identify business-relevant 3C hardware independently from AI labels."""
+    evidence_sources = [("标题", video.title)]
+    if video.category in THREE_C_CATEGORY_HINTS and tags:
+        evidence_sources.append(("标签", " ".join(tags)))
+    for source, evidence_text in evidence_sources:
+        computer_match = THREE_C_COMPUTER_OVERRIDE.search(evidence_text)
+        if computer_match and (source == "标题" or THREE_C_STRONG_TERM.search(evidence_text)):
+            reasons = ["3C品类：电脑硬件", f"{source}命中：{computer_match.group(0)}"]
+            if video.category in THREE_C_CATEGORY_HINTS:
+                reasons.append(f"B站{video.category}分区")
+            return "电脑硬件", "；".join(reasons)
+        for product_group, pattern in THREE_C_PATTERNS:
+            match = pattern.search(evidence_text)
+            if not match:
+                continue
+            if source == "标签" and not THREE_C_STRONG_TERM.search(evidence_text):
+                continue
+            if (
+                product_group == "手机通信"
+                and THREE_C_SOFTWARE_CONTEXT.search(video.title)
+                and not THREE_C_STRONG_TERM.search(video.title)
+            ):
+                continue
+            if (
+                source == "标题"
+                and video.category not in THREE_C_CATEGORY_HINTS
+                and THREE_C_WEAK_TERM.fullmatch(match.group(0))
+                and not THREE_C_STRONG_TERM.search(video.title)
+                and not THREE_C_PRODUCT_CONTEXT.search(video.title)
+            ):
+                continue
+            reasons = [f"3C品类：{product_group}", f"{source}命中：{match.group(0)}"]
+            if video.category in THREE_C_CATEGORY_HINTS:
+                reasons.append(f"B站{video.category}分区")
+            return product_group, "；".join(reasons)
+    return None, ""
+
+
 def enrich(
     client: BilibiliClient,
     groups: list[list[Video]],
@@ -321,12 +424,18 @@ def enrich(
 
 
 def select(videos: list[Video], tags: dict[str, list[str]]) -> list[dict[str, Any]]:
-    """Select AI-related videos and serialize report fields."""
+    """Select AI or 3C-related videos and serialize auditable labels."""
     selected: list[dict[str, Any]] = []
     for video in videos:
-        direction, reason = classify(video, tags.get(video.bvid, []))
-        if direction is None:
+        video_tags = tags.get(video.bvid, [])
+        direction, ai_reason = classify(video, video_tags)
+        three_c_category, three_c_reason = classify_three_c(video, video_tags)
+        labels = [direction] if direction else []
+        if three_c_category:
+            labels.append("3C数码")
+        if not labels:
             continue
+        reasons = [reason for reason in [ai_reason, three_c_reason] if reason]
         selected.append(
             {
                 "position": video.position,
@@ -337,7 +446,9 @@ def select(videos: list[Video], tags: dict[str, list[str]]) -> list[dict[str, An
                 "view": video.view,
                 "like": video.like,
                 "direction": direction,
-                "reason": reason,
+                "labels": labels,
+                "three_c_category": three_c_category,
+                "reason": "；".join(reasons),
                 "url": VIDEO_URL.format(bvid=video.bvid),
             }
         )
@@ -354,13 +465,13 @@ def x(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
-def count_direction(group: dict[str, Any], direction: str) -> int:
-    """Count one direction inside a source list."""
-    return sum(1 for item in group["items"] if item["direction"] == direction)
+def count_label(group: dict[str, Any], label: str) -> int:
+    """Count one possibly overlapping label inside a source list."""
+    return sum(1 for item in group["items"] if label in item["labels"])
 
 
-def merge_direction(report: dict[str, Any], direction: str) -> list[dict[str, Any]]:
-    """Merge source appearances by BV id for one report direction."""
+def merge_matching(report: dict[str, Any], labels: set[str]) -> list[dict[str, Any]]:
+    """Merge source appearances by BV id when any requested label is present."""
     merged: dict[str, dict[str, Any]] = {}
     sources = [
         ("综合热门", report["popular"]["items"]),
@@ -369,7 +480,7 @@ def merge_direction(report: dict[str, Any], direction: str) -> list[dict[str, An
     ]
     for source, items in sources:
         for item in items:
-            if item["direction"] != direction:
+            if not labels.intersection(item["labels"]):
                 continue
             if item["bvid"] not in merged:
                 merged[item["bvid"]] = {**item, "sources": []}
@@ -377,11 +488,25 @@ def merge_direction(report: dict[str, Any], direction: str) -> list[dict[str, An
     return list(merged.values())
 
 
+def label_text(item: dict[str, Any]) -> str:
+    """Render compact overlapping business labels for one video."""
+    labels: list[str] = []
+    if "AI科技应用" in item["labels"]:
+        labels.append("AI科技应用")
+    if "3C数码" in item["labels"]:
+        category = item.get("three_c_category") or ""
+        labels.append(f"3C数码·{category}" if category else "3C数码")
+    if "AIGC生成内容" in item["labels"]:
+        labels.append("AIGC生成内容")
+    return " + ".join(labels)
+
+
 def render_rows(items: list[dict[str, Any]]) -> str:
     """Render the rows shared by the two direction tables."""
     return "".join(
         "<tr>"
         f"<td>{x('；'.join(item['sources']))}</td>"
+        f"<td>{x(label_text(item))}</td>"
         f"<td><a href=\"{x(item['url'])}\">{x(item['title'])}</a></td>"
         f"<td>{x(item['owner'])}</td>"
         f"<td>{x(item['reason'])}</td>"
@@ -395,9 +520,10 @@ def render_table(items: list[dict[str, Any]]) -> str:
     if not items:
         return "<p>本日未命中。</p>"
     return (
-        "<table><colgroup><col width=\"165\"/><col width=\"300\"/>"
-        "<col width=\"120\"/><col width=\"210\"/></colgroup>"
+        "<table><colgroup><col width=\"150\"/><col width=\"150\"/><col width=\"280\"/>"
+        "<col width=\"110\"/><col width=\"220\"/></colgroup>"
         "<thead><tr><th background-color=\"light-gray\">来源 / 榜位</th>"
+        "<th background-color=\"light-blue\">方向</th>"
         "<th background-color=\"light-gray\">视频</th>"
         "<th background-color=\"light-gray\">UP 主</th>"
         "<th background-color=\"light-gray\">判定依据</th></tr></thead>"
@@ -415,8 +541,15 @@ def render_xml(
     popular = report["popular"]
     ranking = report["ranking"]
     weekly = report["weekly"]
-    technology = merge_direction(report, "AI科技应用")
-    aigc = merge_direction(report, "AIGC生成内容")
+    technology = merge_matching(report, {"AI科技应用"})
+    three_c = merge_matching(report, {"3C数码"})
+    focus = merge_matching(report, {"AI科技应用", "3C数码"})
+    aigc = merge_matching(report, {"AIGC生成内容"})
+    technology_three_c = {
+        item["bvid"]
+        for item in focus
+        if {"AI科技应用", "3C数码"}.issubset(set(item["labels"]))
+    }
     prefix = "<hr/>" if leading_rule else ""
     heading = f"<h1>{x(report['date'])}</h1>" if include_heading else ""
     return "".join(
@@ -425,30 +558,36 @@ def render_xml(
             heading,
             f"<p><b>抓取时间：</b>{x(report['snapshot_at'])}　"
             f"<b>每周必看：</b>{x(weekly['label'])}</p>",
-            "<table><colgroup><col width=\"150\"/><col width=\"90\"/>"
-            "<col width=\"120\"/><col width=\"120\"/><col width=\"90\"/></colgroup>"
+            "<table><colgroup><col width=\"145\"/><col width=\"75\"/>"
+            "<col width=\"105\"/><col width=\"90\"/><col width=\"105\"/><col width=\"90\"/></colgroup>"
             "<thead><tr><th background-color=\"light-gray\">榜单</th>"
             "<th background-color=\"light-gray\">规模</th>"
             "<th background-color=\"light-blue\">AI 科技应用</th>"
+            "<th background-color=\"light-blue\">3C 数码</th>"
             "<th background-color=\"light-gray\">AIGC 生成内容</th>"
-            "<th background-color=\"light-gray\">合计</th></tr></thead><tbody>",
+            "<th background-color=\"light-gray\">相关视频</th></tr></thead><tbody>",
             f"<tr><td>综合热门</td><td>{popular['total_slots']}</td>"
-            f"<td>{count_direction(popular, 'AI科技应用')}</td>"
-            f"<td>{count_direction(popular, 'AIGC生成内容')}</td><td>{popular['ai_count']}</td></tr>",
+            f"<td>{count_label(popular, 'AI科技应用')}</td>"
+            f"<td>{count_label(popular, '3C数码')}</td>"
+            f"<td>{count_label(popular, 'AIGC生成内容')}</td><td>{popular['related_count']}</td></tr>",
             f"<tr><td>全站排行榜</td><td>{ranking['total_slots']}</td>"
-            f"<td>{count_direction(ranking, 'AI科技应用')}</td>"
-            f"<td>{count_direction(ranking, 'AIGC生成内容')}</td><td>{ranking['ai_count']}</td></tr>",
+            f"<td>{count_label(ranking, 'AI科技应用')}</td>"
+            f"<td>{count_label(ranking, '3C数码')}</td>"
+            f"<td>{count_label(ranking, 'AIGC生成内容')}</td><td>{ranking['related_count']}</td></tr>",
             f"<tr><td>每周必看第 {weekly['number']} 期</td><td>{weekly['total_slots']}</td>"
-            f"<td>{count_direction(weekly, 'AI科技应用')}</td>"
-            f"<td>{count_direction(weekly, 'AIGC生成内容')}</td><td>{weekly['ai_count']}</td></tr>",
+            f"<td>{count_label(weekly, 'AI科技应用')}</td>"
+            f"<td>{count_label(weekly, '3C数码')}</td>"
+            f"<td>{count_label(weekly, 'AIGC生成内容')}</td><td>{weekly['related_count']}</td></tr>",
             "</tbody></table>",
-            f"<p><b>三榜去重：</b>AI 科技应用 {len(technology)} 支，AIGC 生成内容 {len(aigc)} 支。"
-            "团队重点关注前者；综合热门按匿名新访客会话抓取，排序可能个性化。</p>",
-            f"<h2>AI 科技应用（重点）：{len(technology)} 支</h2>",
-            render_table(technology),
+            f"<p><b>三榜去重：</b>AI 科技应用 {len(technology)} 支，3C 数码 {len(three_c)} 支，"
+            f"AIGC 生成内容 {len(aigc)} 支；其中 AI 科技应用 × 3C 数码 {len(technology_three_c)} 支。"
+            "标签允许重叠，科技分区只用于召回，不直接作为报告分类。</p>",
+            f"<h2>重点关注：AI 科技应用与 3C 数码（{len(focus)} 支）</h2>",
+            render_table(focus),
             f"<h2>AIGC 生成内容：{len(aigc)} 支</h2>",
             render_table(aigc),
             "<p><b>口径：</b>教程、工具、模型、智能体、软件、AI 编程、产品和物理 AI 归入 AI 科技应用；"
+            "手机、电脑硬件、影像影音、外设游戏硬件和智能穿戴家居归入 3C 数码；"
             "AI 视频、音乐、动画、短剧、配音和生成工具成片归入 AIGC 生成内容。"
             "反诈提醒、禁用声明和“不是 AI”等偶然命中排除。</p>",
         ]
@@ -460,8 +599,8 @@ def render_document(report: dict[str, Any]) -> str:
     return "".join(
         [
             "<title>B站 AI 热门日报</title>",
-            "<p>每日记录综合热门、全站排行榜和每周必看中的 AI 科技应用与 AIGC 生成内容。"
-            "AI 科技应用是团队重点关注方向。</p>",
+            "<p>每日记录综合热门、全站排行榜和每周必看中的 AI 科技应用、3C 数码与 AIGC 生成内容。"
+            "团队重点关注 AI 科技应用与 3C 数码；科技分区仅作为候选池。</p>",
             render_xml(report, leading_rule=False),
         ]
     )
@@ -832,19 +971,29 @@ def collect(max_popular_pages: int) -> dict[str, Any]:
         raise CollectionError(
             f"Bilibili tag lookup failed for {len(tag_errors)}/{tag_total} videos; refusing to write an undercount"
         )
-    popular_ai = select(popular, tags)
-    ranking_ai = select(ranking, tags)
-    weekly_ai = select(weekly, tags)
-    unique_ai = {item["bvid"] for item in popular_ai + ranking_ai + weekly_ai}
-    unique_technology = {
+    popular_selected = select(popular, tags)
+    ranking_selected = select(ranking, tags)
+    weekly_selected = select(weekly, tags)
+    all_selected = popular_selected + ranking_selected + weekly_selected
+    unique_related = {item["bvid"] for item in all_selected}
+    unique_ai = {
         item["bvid"]
-        for item in popular_ai + ranking_ai + weekly_ai
-        if item["direction"] == "AI科技应用"
+        for item in all_selected
+        if {"AI科技应用", "AIGC生成内容"}.intersection(item["labels"])
+    }
+    unique_technology = {
+        item["bvid"] for item in all_selected if "AI科技应用" in item["labels"]
     }
     unique_aigc = {
+        item["bvid"] for item in all_selected if "AIGC生成内容" in item["labels"]
+    }
+    unique_three_c = {
+        item["bvid"] for item in all_selected if "3C数码" in item["labels"]
+    }
+    unique_technology_three_c = {
         item["bvid"]
-        for item in popular_ai + ranking_ai + weekly_ai
-        if item["direction"] == "AIGC生成内容"
+        for item in all_selected
+        if {"AI科技应用", "3C数码"}.issubset(set(item["labels"]))
     }
     now = datetime.now(TIMEZONE)
     return {
@@ -853,26 +1002,44 @@ def collect(max_popular_pages: int) -> dict[str, Any]:
         "popular": {
             "total_slots": popular_slots,
             "unique_videos": len(popular),
-            "ai_count": len(popular_ai),
-            "items": popular_ai,
+            "ai_count": sum(
+                1
+                for item in popular_selected
+                if {"AI科技应用", "AIGC生成内容"}.intersection(item["labels"])
+            ),
+            "related_count": len(popular_selected),
+            "items": popular_selected,
         },
         "ranking": {
             "total_slots": ranking_slots,
             "unique_videos": len(ranking),
-            "ai_count": len(ranking_ai),
-            "items": ranking_ai,
+            "ai_count": sum(
+                1
+                for item in ranking_selected
+                if {"AI科技应用", "AIGC生成内容"}.intersection(item["labels"])
+            ),
+            "related_count": len(ranking_selected),
+            "items": ranking_selected,
         },
         "weekly": {
             "number": weekly_number,
             "label": weekly_label,
             "total_slots": weekly_slots,
             "unique_videos": len(weekly),
-            "ai_count": len(weekly_ai),
-            "items": weekly_ai,
+            "ai_count": sum(
+                1
+                for item in weekly_selected
+                if {"AI科技应用", "AIGC生成内容"}.intersection(item["labels"])
+            ),
+            "related_count": len(weekly_selected),
+            "items": weekly_selected,
         },
+        "unique_related_count": len(unique_related),
         "unique_ai_count": len(unique_ai),
         "unique_technology_count": len(unique_technology),
         "unique_aigc_count": len(unique_aigc),
+        "unique_three_c_count": len(unique_three_c),
+        "unique_technology_three_c_count": len(unique_technology_three_c),
         "tag_errors": tag_errors,
     }
 
@@ -934,25 +1101,34 @@ def main() -> int:
             "popular": {
                 "total": report["popular"]["total_slots"],
                 "ai_count": report["popular"]["ai_count"],
-                "technology_count": count_direction(report["popular"], "AI科技应用"),
-                "aigc_count": count_direction(report["popular"], "AIGC生成内容"),
+                "related_count": report["popular"]["related_count"],
+                "technology_count": count_label(report["popular"], "AI科技应用"),
+                "three_c_count": count_label(report["popular"], "3C数码"),
+                "aigc_count": count_label(report["popular"], "AIGC生成内容"),
             },
             "ranking": {
                 "total": report["ranking"]["total_slots"],
                 "ai_count": report["ranking"]["ai_count"],
-                "technology_count": count_direction(report["ranking"], "AI科技应用"),
-                "aigc_count": count_direction(report["ranking"], "AIGC生成内容"),
+                "related_count": report["ranking"]["related_count"],
+                "technology_count": count_label(report["ranking"], "AI科技应用"),
+                "three_c_count": count_label(report["ranking"], "3C数码"),
+                "aigc_count": count_label(report["ranking"], "AIGC生成内容"),
             },
             "weekly": {
                 "number": report["weekly"]["number"],
                 "total": report["weekly"]["total_slots"],
                 "ai_count": report["weekly"]["ai_count"],
-                "technology_count": count_direction(report["weekly"], "AI科技应用"),
-                "aigc_count": count_direction(report["weekly"], "AIGC生成内容"),
+                "related_count": report["weekly"]["related_count"],
+                "technology_count": count_label(report["weekly"], "AI科技应用"),
+                "three_c_count": count_label(report["weekly"], "3C数码"),
+                "aigc_count": count_label(report["weekly"], "AIGC生成内容"),
             },
+            "unique_related_count": report["unique_related_count"],
             "unique_ai_count": report["unique_ai_count"],
             "unique_technology_count": report["unique_technology_count"],
             "unique_aigc_count": report["unique_aigc_count"],
+            "unique_three_c_count": report["unique_three_c_count"],
+            "unique_technology_three_c_count": report["unique_technology_three_c_count"],
             "tag_error_count": len(report["tag_errors"]),
             "xml_bytes": len(xml.encode("utf-8")),
         }

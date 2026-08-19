@@ -1,11 +1,14 @@
 # B站 AI 热门日报 Skill
 
-一个可复用的 Codex Skill：每日抓取 B站的「综合热门」「全站排行榜」和最新一期「每周必看」，识别其中的 AI 相关视频，并把结果写成按日期累积的飞书日报。
+一个可复用的 Codex Skill：每日抓取 B站的「综合热门」「全站排行榜」和最新一期「每周必看」，识别其中的 AI 科技应用、3C 数码与 AIGC 内容，并把结果写成按日期累积的飞书日报。它也可以持续采样综合热门，分析榜单的实际更新规律。
 
-它会把内容明确分成两条线：
+它使用三个业务标签：
 
 - **AI 科技应用（重点）**：教程、工具、模型、智能体、AI 编程、产品、AI 游戏/应用、AI 安全、AI 眼镜、物理 AI 与机器人。
+- **3C 数码（重点）**：手机通信、电脑硬件、影像影音、外设与游戏硬件、智能穿戴与智能家居。
 - **AIGC 生成内容**：AI 视频、音乐、动画、短剧、配音、AI 辅助创作，以及由 Updream、MiniMax、Seedance、Seko 等工具生成的成片。
+
+“AI 科技应用”与“AIGC”按视频主轴二选一；“3C 数码”是独立维度，可以与前两类重叠。B站“科技”分区只作为候选池，不会直接变成报告标签。
 
 ## 功能
 
@@ -13,17 +16,19 @@
 - 结合标题、简介、分区和 B站标签判断视频是否与 AI 有关。
 - 排除反诈提示、禁用 AI 声明、“不是 AI”和作者名中的偶然字符串。
 - 同一 BV 号去重，同时保留它出现过的榜单和榜位。
-- 生成「日期一级标题 + 两个分类二级标题」的飞书日报。
+- 生成「日期一级标题 + 两个报告二级标题」的飞书日报。
 - 日期章节按倒序排列，最新一天始终显示在最上方。
 - 同一天首次运行会写入日期章节，后续运行只刷新当天章节，不会重复创建日期。
 - 标签接口失败超过 5% 时拒绝写入，避免把限流造成的漏数当成真实数据。
+- 用无 Cookie 的固定口径采样综合热门 Top 200，并以 SQLite 保存追加式快照。
+- 分析 Top 20/50/100/200 的新增、退出、名次变化，以及小时和半小时时段差异。
 
 ## 报告结构
 
 ```text
 B站 AI 热门日报
 └── 2026-08-19
-    ├── AI 科技应用（重点）
+    ├── 重点关注：AI 科技应用与 3C 数码
     └── AIGC 生成内容
 ```
 
@@ -103,21 +108,36 @@ python3 scripts/collect_and_write.py --overwrite --doc "飞书文档 URL 或 tok
 脚本把结果以 JSON 输出到终端，主要字段包括：
 
 - `status`：`dry_run`、`written`、`updated`、`already_exists` 或 `overwritten`
-- `popular`、`ranking`、`weekly`：各榜单规模与两类 AI 视频数量
+- `popular`、`ranking`、`weekly`：各榜单规模与三个业务标签的数量
 - `unique_technology_count`：三榜去重后的 AI 科技应用数量
+- `unique_three_c_count`：三榜去重后的 3C 数码数量
+- `unique_technology_three_c_count`：同时属于 AI 科技应用与 3C 数码的数量
 - `unique_aigc_count`：三榜去重后的 AIGC 数量
 - `tag_error_count`：B站标签请求失败数量
 - `document_url`：目标飞书文档
 
-## 每日自动运行
+## 自动运行与两周采样实验
 
-可以在 Codex 中创建一个每天 18:30 运行的自动任务，提示词示例：
+日报可以在 Codex 中按固定时间运行，提示词示例：
 
 ```text
 使用 $track-bilibili-ai-hot 执行每日监测，抓取综合热门、全站排行榜和最新每周必看，
-区分“AI 科技应用（重点）”与“AIGC 生成内容”，并写入或刷新配置的飞书文档当天章节。
+区分“AI 科技应用”“3C 数码”与“AIGC 生成内容”，并写入或刷新配置的飞书文档当天章节。
 接口限流或完整性校验失败时不要写入不完整数据。
 ```
+
+如果还不知道综合热门的换榜规律，可以先连续 14 天每半小时采样一次，推荐放在每小时 `07` 分和 `37` 分，避开整点边界：
+
+```bash
+python3 scripts/sample_popular.py \
+  --db data/popular_samples.sqlite3 \
+  --limit 200
+
+python3 scripts/analyze_popular_samples.py \
+  --db data/popular_samples.sqlite3
+```
+
+采样不使用 Cookie，也不调用模型，不会写入飞书；只有最终日报任务需要飞书登录态。实验结束后再根据变化峰值调整日报时间。
 
 ## 目录结构
 
@@ -127,13 +147,16 @@ skills/track-bilibili-ai-hot/
 ├── agents/
 │   └── openai.yaml
 └── scripts/
-    └── collect_and_write.py
+    ├── collect_and_write.py
+    ├── sample_popular.py
+    └── analyze_popular_samples.py
 ```
 
 ## 数据与安全
 
 - 仓库不包含飞书文档地址、登录凭据、浏览器 Cookie 或服务器信息。
 - B站匿名指纹 Cookie 只在脚本运行期间保存在内存中。
+- 热门规律采样器完全不发送 Cookie；SQLite 只保存公开榜单字段和采样时间。
 - 综合热门会随时间和访问会话变化，日报记录的是运行时快照。
 - 请勿把飞书 Token、账号凭据或其他私密配置提交到仓库。
 
