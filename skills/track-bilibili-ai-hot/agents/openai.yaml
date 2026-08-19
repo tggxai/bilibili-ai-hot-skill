@@ -1,0 +1,4 @@
+interface:
+  display_name: "B站 AI 热门日报"
+  short_description: "区分 AI 科技应用与 AIGC，生成 B 站飞书日报"
+  default_prompt: "使用 $track-bilibili-ai-hot 抓取今天的 B 站榜单，区分 AI 科技应用与 AIGC，并把日报追加到配置的飞书文档。"
