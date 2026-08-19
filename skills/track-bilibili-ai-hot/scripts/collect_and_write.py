@@ -1168,6 +1168,53 @@ def collect(max_popular_pages: int) -> dict[str, Any]:
     }
 
 
+def load_report(path: str) -> dict[str, Any]:
+    """Load and validate a complete report collected in another network environment."""
+    if path == "-":
+        payload = json.load(sys.stdin)
+    else:
+        with open(path, "r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+    if not isinstance(payload, dict):
+        raise CollectionError("Imported report must be a JSON object")
+    today = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    if payload.get("date") != today:
+        raise CollectionError(f"Imported report date must be today ({today})")
+    snapshot_at = payload.get("snapshot_at")
+    if not isinstance(snapshot_at, str) or not snapshot_at.startswith(today):
+        raise CollectionError("Imported report has an invalid snapshot timestamp")
+    categories = {"AI软件", "AI硬件/3C", "AIGC内容"}
+    all_items: list[dict[str, Any]] = []
+    for source in ["popular", "ranking", "weekly"]:
+        group = payload.get(source)
+        if not isinstance(group, dict) or not isinstance(group.get("items"), list):
+            raise CollectionError(f"Imported report is missing {source} items")
+        if not isinstance(group.get("total_slots"), int) or group["total_slots"] <= 0:
+            raise CollectionError(f"Imported report has an invalid {source} list size")
+        for item in group["items"]:
+            if not isinstance(item, dict) or item.get("business_category") not in categories:
+                raise CollectionError(f"Imported report has an invalid {source} category")
+            if not item.get("bvid") or not item.get("url"):
+                raise CollectionError(f"Imported report has an incomplete {source} item")
+        all_items.extend(group["items"])
+    unique_by_category = {
+        category: {
+            item["bvid"] for item in all_items if item["business_category"] == category
+        }
+        for category in categories
+    }
+    expected_counts = {
+        "unique_software_count": len(unique_by_category["AI软件"]),
+        "unique_hardware_count": len(unique_by_category["AI硬件/3C"]),
+        "unique_aigc_count": len(unique_by_category["AIGC内容"]),
+        "unique_related_count": len({item["bvid"] for item in all_items}),
+    }
+    for field, expected in expected_counts.items():
+        if payload.get(field) != expected:
+            raise CollectionError(f"Imported report failed the {field} integrity check")
+    return payload
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1193,6 +1240,10 @@ def parse_args() -> argparse.Namespace:
         default=50,
         help="Safety cap for 综合热门 pagination (default: 50)",
     )
+    parser.add_argument(
+        "--report-input",
+        help="Use a complete report JSON from another collector; pass - to read stdin",
+    )
     return parser.parse_args()
 
 
@@ -1206,7 +1257,11 @@ def main() -> int:
             raise CollectionError(
                 "Feishu document is required; pass --doc or set BILIBILI_AI_FEISHU_DOC"
             )
-        report = collect(args.max_popular_pages)
+        report = (
+            load_report(args.report_input)
+            if args.report_input
+            else collect(args.max_popular_pages)
+        )
         xml = render_xml(report)
         status = "dry_run"
         if args.overwrite:

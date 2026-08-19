@@ -53,6 +53,14 @@ description: Collect the current Bilibili 综合热门、全站排行榜、每�
 python3 scripts/collect_and_write.py --max-popular-pages 1
 ```
 
+标签接口失败超过阈值且另一个受信任环境能够完整抓取时，可把该环境的 `collect()` JSON 通过标准输入交给本机写入流程：
+
+```bash
+python3 scripts/collect_and_write.py --upsert --report-input -
+```
+
+输入报告必须是当天数据，且三类去重数量与明细一致，否则脚本拒绝写入。飞书用户凭证仍只保留在执行 `--upsert` 的本机。
+
 写入目标文档时显式传入：
 
 ```bash

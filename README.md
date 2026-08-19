@@ -85,6 +85,12 @@ python3 scripts/collect_and_write.py --max-popular-pages 1
 python3 scripts/collect_and_write.py
 ```
 
+如果当前网络被 B站标签接口限流，可在另一个受信任网络完成 `collect()`，再把完整报告 JSON 通过标准输入交给本机写入。导入报告必须属于当天，且三类去重数量必须与明细一致；飞书凭证无需离开本机。
+
+```bash
+python3 scripts/collect_and_write.py --upsert --report-input -
+```
+
 写入指定飞书文档：
 
 ```bash
