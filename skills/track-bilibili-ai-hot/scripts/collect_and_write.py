@@ -555,14 +555,58 @@ def write_report(doc: str, date: str, xml: str) -> str:
 
 def find_date_heading_id(content: str, date: str) -> str | None:
     """Find the exact top-level date heading in an outline fragment."""
+    for heading_date, heading_id in date_heading_ids(content):
+        if heading_date == date:
+            return heading_id
+    return None
+
+
+def date_heading_ids(content: str) -> list[tuple[str, str]]:
+    """Return date heading ids in their current document order."""
     try:
         root = ET.fromstring(content)
     except ET.ParseError as exc:
         raise CollectionError(f"Feishu outline returned invalid XML: {exc}") from exc
+    headings: list[tuple[str, str]] = []
     for node in root.iter("h1"):
-        if "".join(node.itertext()).strip() == date:
-            return node.attrib.get("id")
-    return None
+        label = "".join(node.itertext()).strip()
+        block_id = node.attrib.get("id")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", label) and block_id:
+            headings.append((label, block_id))
+    return headings
+
+
+def report_anchor_id(doc: str, document_id: str) -> str:
+    """Find the intro block after which newest-first date sections belong."""
+    result = run_lark(
+        [
+            "docs",
+            "+fetch",
+            "--as",
+            "user",
+            "--doc",
+            doc,
+            "--scope",
+            "keyword",
+            "--keyword",
+            "每日记录综合热门",
+            "--detail",
+            "with-ids",
+            "--doc-format",
+            "xml",
+        ]
+    )
+    content = (((result.get("data") or {}).get("document") or {}).get("content") or "")
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise CollectionError(f"Feishu intro lookup returned invalid XML: {exc}") from exc
+    for node in root:
+        if node.attrib.get("id"):
+            return str(node.attrib["id"])
+        if node.attrib.get("top-block-id"):
+            return str(node.attrib["top-block-id"])
+    return document_id
 
 
 def section_body_ids(content: str, date: str) -> list[str]:
@@ -606,10 +650,52 @@ def upsert_report(doc: str, report: dict[str, Any]) -> str:
             "xml",
         ]
     )
-    outline_content = (((outline.get("data") or {}).get("document") or {}).get("content") or "")
+    outline_document = ((outline.get("data") or {}).get("document") or {})
+    outline_content = outline_document.get("content") or ""
+    document_id = str(outline_document.get("document_id") or "")
+    headings = date_heading_ids(outline_content)
     heading_id = find_date_heading_id(outline_content, date)
     if not heading_id:
-        return write_report(doc, date, render_xml(report))
+        if not headings:
+            return write_report(doc, date, render_xml(report))
+        anchor_id = report_anchor_id(doc, document_id)
+        run_lark(
+            [
+                "docs",
+                "+update",
+                "--as",
+                "user",
+                "--doc",
+                doc,
+                "--command",
+                "block_insert_after",
+                "--block-id",
+                anchor_id,
+                "--content",
+                "-",
+            ],
+            stdin=render_xml(report, leading_rule=False),
+        )
+        verified = run_lark(
+            [
+                "docs",
+                "+fetch",
+                "--as",
+                "user",
+                "--doc",
+                doc,
+                "--scope",
+                "keyword",
+                "--keyword",
+                report["snapshot_at"],
+                "--detail",
+                "simple",
+            ]
+        )
+        check = (((verified.get("data") or {}).get("document") or {}).get("content") or "")
+        if report["snapshot_at"] not in check:
+            raise CollectionError("Feishu insert returned success but the latest snapshot was not found")
+        return "written"
 
     section = run_lark(
         [
@@ -631,6 +717,24 @@ def upsert_report(doc: str, report: dict[str, Any]) -> str:
     )
     section_content = (((section.get("data") or {}).get("document") or {}).get("content") or "")
     old_body_ids = section_body_ids(section_content, date)
+    if headings and heading_id != headings[0][1]:
+        anchor_id = report_anchor_id(doc, document_id)
+        run_lark(
+            [
+                "docs",
+                "+update",
+                "--as",
+                "user",
+                "--doc",
+                doc,
+                "--command",
+                "block_move_after",
+                "--block-id",
+                anchor_id,
+                "--src-block-ids",
+                ",".join([heading_id, *old_body_ids]),
+            ]
+        )
     body = render_xml(report, leading_rule=False, include_heading=False)
     run_lark(
         [
