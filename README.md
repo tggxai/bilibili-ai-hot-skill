@@ -14,7 +14,7 @@
 - 排除反诈提示、禁用 AI 声明、“不是 AI”和作者名中的偶然字符串。
 - 同一 BV 号去重，同时保留它出现过的榜单和榜位。
 - 生成「日期一级标题 + 两个分类二级标题」的飞书日报。
-- 同一天重复运行不会重复写入。
+- 同一天首次运行会追加日期章节，后续运行只刷新当天章节，不会重复创建日期。
 - 标签接口失败超过 5% 时拒绝写入，避免把限流造成的漏数当成真实数据。
 
 ## 报告结构
@@ -80,7 +80,7 @@ python3 scripts/collect_and_write.py
 
 ```bash
 python3 scripts/collect_and_write.py \
-  --write \
+  --upsert \
   --doc "https://example.feishu.cn/docx/你的文档Token"
 ```
 
@@ -88,7 +88,7 @@ python3 scripts/collect_and_write.py \
 
 ```bash
 export BILIBILI_AI_FEISHU_DOC="https://example.feishu.cn/docx/你的文档Token"
-python3 scripts/collect_and_write.py --write
+python3 scripts/collect_and_write.py --upsert
 ```
 
 首次把已有文档迁移成日报结构时，可使用 `--overwrite`。这个参数会覆盖整篇目标文档，请只在明确需要时使用：
@@ -101,7 +101,7 @@ python3 scripts/collect_and_write.py --overwrite --doc "飞书文档 URL 或 tok
 
 脚本把结果以 JSON 输出到终端，主要字段包括：
 
-- `status`：`dry_run`、`written`、`already_exists` 或 `overwritten`
+- `status`：`dry_run`、`written`、`updated`、`already_exists` 或 `overwritten`
 - `popular`、`ranking`、`weekly`：各榜单规模与两类 AI 视频数量
 - `unique_technology_count`：三榜去重后的 AI 科技应用数量
 - `unique_aigc_count`：三榜去重后的 AIGC 数量
@@ -114,7 +114,7 @@ python3 scripts/collect_and_write.py --overwrite --doc "飞书文档 URL 或 tok
 
 ```text
 使用 $track-bilibili-ai-hot 执行每日监测，抓取综合热门、全站排行榜和最新每周必看，
-区分“AI 科技应用（重点）”与“AIGC 生成内容”，并把结果幂等追加到配置的飞书文档。
+区分“AI 科技应用（重点）”与“AIGC 生成内容”，并写入或刷新配置的飞书文档当天章节。
 接口限流或完整性校验失败时不要写入不完整数据。
 ```
 

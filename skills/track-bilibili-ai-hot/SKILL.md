@@ -13,12 +13,12 @@ description: Collect the current Bilibili 综合热门、全站排行榜、每�
 2. 从本技能目录运行：
 
    ```bash
-   python3 scripts/collect_and_write.py --write --doc "飞书文档 URL 或 token"
+   python3 scripts/collect_and_write.py --upsert --doc "飞书文档 URL 或 token"
    ```
 
 3. 检查脚本返回的 JSON：
-   - `status: written`：已追加并回读验证；报告数量和 `document_url`。
-   - `status: already_exists`：当天报告已存在；不要再次写入，报告已有文档链接。
+   - `status: written`：当天首次运行，已追加并回读验证。
+   - `status: updated`：当天已有报告，已只刷新当天章节并保留历史日期。
    - 非零退出：报告失败阶段与简短错误，不把空榜单写入飞书。
    - 标签接口失败超过 5% 时脚本主动失败，避免把限速造成的漏数写进日报。
 4. 不要自行重写脚本已经完成的统计，也不要仅凭标题二次删改候选。用户要求改变口径时，修改脚本规则并重新验证。
@@ -37,9 +37,9 @@ description: Collect the current Bilibili 综合热门、全站排行榜、每�
 
 - 文档标题固定为 `B站 AI 热门日报`；每个日期使用 `YYYY-MM-DD` 一级标题，时区固定为 `Asia/Shanghai`。
 - 每个日期下面只使用两个二级标题：`AI 科技应用（重点）`、`AIGC 生成内容`。三榜来源和榜位合并到表格行中，不重复创建三套章节。
-- 写入前用日期查询目标文档；命中即返回 `already_exists`。
+- 写入前按日期一级标题查询目标文档；当天不存在则追加，已存在则只替换当天标题下的内容。
 - 写入内容包含分类摘要、视频链接、来源/榜位、UP 主和判定依据。
-- 写入后再次查询当天日期；未命中则视为失败。
+- 写入后再次查询最新抓取时间；未命中则视为失败。
 
 ## 调试
 
@@ -52,7 +52,7 @@ python3 scripts/collect_and_write.py --max-popular-pages 1
 写入目标文档时显式传入：
 
 ```bash
-python3 scripts/collect_and_write.py --write --doc "飞书文档 URL 或 token"
+python3 scripts/collect_and_write.py --upsert --doc "飞书文档 URL 或 token"
 ```
 
 不要在脚本、日志或文档中写入飞书凭证或浏览器 Cookie；脚本仅使用临时匿名 B站指纹 Cookie。

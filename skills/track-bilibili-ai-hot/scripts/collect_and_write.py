@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import html
+import http.cookies
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -25,7 +27,7 @@ DEFAULT_DOC = os.environ.get("BILIBILI_AI_FEISHU_DOC", "")
 TIMEZONE = timezone(timedelta(hours=8), name="CST")
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 Chrome/138 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 )
 API = "https://api.bilibili.com"
 VIDEO_URL = "https://www.bilibili.com/video/{bvid}/"
@@ -99,14 +101,28 @@ class BilibiliClient:
 
     def refresh_cookie(self) -> None:
         """Refresh the anonymous fingerprint cookie used by guarded endpoints."""
-        payload = self._request_json("/x/frontend/finger/spi", use_cookie=False)
-        data = payload.get("data") or {}
-        b3 = data.get("b_3")
-        b4 = data.get("b_4")
-        if not b3 or not b4:
-            raise CollectionError("Bilibili fingerprint API returned no identifiers")
+        request = urllib.request.Request(
+            "https://www.bilibili.com/",
+            headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                response.read()
+                set_cookie_headers = response.headers.get_all("Set-Cookie") or []
+        except urllib.error.HTTPError as exc:
+            raise CollectionError(f"HTTP {exc.code} while starting Bilibili session") from exc
+        values: dict[str, str] = {}
+        for header in set_cookie_headers:
+            parsed = http.cookies.SimpleCookie()
+            parsed.load(header)
+            values.update({name: morsel.value for name, morsel in parsed.items()})
+        if not values.get("buvid3"):
+            raise CollectionError("Bilibili homepage returned no anonymous session cookie")
+        parts = [f"buvid3={values['buvid3']}"]
+        if values.get("b_nut"):
+            parts.append(f"b_nut={values['b_nut']}")
         with self._lock:
-            self._cookie = f"buvid3={b3}; buvid4={b4}; b_nut={int(time.time())}"
+            self._cookie = "; ".join(parts)
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """GET a Bilibili JSON endpoint and retry transient or risk-control failures."""
@@ -135,7 +151,11 @@ class BilibiliClient:
 
     def _request_json(self, path: str, *, use_cookie: bool) -> dict[str, Any]:
         url = path if path.startswith("https://") else f"{API}{path}"
-        headers = {"User-Agent": UA, "Referer": "https://www.bilibili.com/"}
+        headers = {
+            "User-Agent": UA,
+            "Referer": "https://www.bilibili.com/",
+            "Accept": "application/json, text/plain, */*",
+        }
         if use_cookie:
             with self._lock:
                 headers["Cookie"] = self._cookie
@@ -385,7 +405,12 @@ def render_table(items: list[dict[str, Any]]) -> str:
     )
 
 
-def render_xml(report: dict[str, Any], *, leading_rule: bool = True) -> str:
+def render_xml(
+    report: dict[str, Any],
+    *,
+    leading_rule: bool = True,
+    include_heading: bool = True,
+) -> str:
     """Render one date-first section with only two second-level headings."""
     popular = report["popular"]
     ranking = report["ranking"]
@@ -393,10 +418,11 @@ def render_xml(report: dict[str, Any], *, leading_rule: bool = True) -> str:
     technology = merge_direction(report, "AI科技应用")
     aigc = merge_direction(report, "AIGC生成内容")
     prefix = "<hr/>" if leading_rule else ""
+    heading = f"<h1>{x(report['date'])}</h1>" if include_heading else ""
     return "".join(
         [
             prefix,
-            f"<h1>{x(report['date'])}</h1>",
+            heading,
             f"<p><b>抓取时间：</b>{x(report['snapshot_at'])}　"
             f"<b>每周必看：</b>{x(weekly['label'])}</p>",
             "<table><colgroup><col width=\"150\"/><col width=\"90\"/>"
@@ -527,6 +553,140 @@ def write_report(doc: str, date: str, xml: str) -> str:
     return "written"
 
 
+def find_date_heading_id(content: str, date: str) -> str | None:
+    """Find the exact top-level date heading in an outline fragment."""
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise CollectionError(f"Feishu outline returned invalid XML: {exc}") from exc
+    for node in root.iter("h1"):
+        if "".join(node.itertext()).strip() == date:
+            return node.attrib.get("id")
+    return None
+
+
+def section_body_ids(content: str, date: str) -> list[str]:
+    """Return direct top-level block ids below one date heading."""
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise CollectionError(f"Feishu section returned invalid XML: {exc}") from exc
+    if root.tag != "fragment":
+        raise CollectionError("Feishu section response did not contain a fragment")
+    children = list(root)
+    if not children or children[0].tag != "h1":
+        raise CollectionError("Feishu date section did not start with an H1 heading")
+    if "".join(children[0].itertext()).strip() != date:
+        raise CollectionError("Feishu date section heading did not match the requested date")
+    ids = [node.attrib.get("id") for node in children[1:]]
+    if any(not block_id for block_id in ids):
+        raise CollectionError("Feishu date section contained a top-level block without an id")
+    return [str(block_id) for block_id in ids]
+
+
+def upsert_report(doc: str, report: dict[str, Any]) -> str:
+    """Append a new date or refresh only the existing date section."""
+    verify_lark_user()
+    date = report["date"]
+    outline = run_lark(
+        [
+            "docs",
+            "+fetch",
+            "--as",
+            "user",
+            "--doc",
+            doc,
+            "--scope",
+            "outline",
+            "--max-depth",
+            "1",
+            "--detail",
+            "with-ids",
+            "--doc-format",
+            "xml",
+        ]
+    )
+    outline_content = (((outline.get("data") or {}).get("document") or {}).get("content") or "")
+    heading_id = find_date_heading_id(outline_content, date)
+    if not heading_id:
+        return write_report(doc, date, render_xml(report))
+
+    section = run_lark(
+        [
+            "docs",
+            "+fetch",
+            "--as",
+            "user",
+            "--doc",
+            doc,
+            "--scope",
+            "section",
+            "--start-block-id",
+            heading_id,
+            "--detail",
+            "full",
+            "--doc-format",
+            "xml",
+        ]
+    )
+    section_content = (((section.get("data") or {}).get("document") or {}).get("content") or "")
+    old_body_ids = section_body_ids(section_content, date)
+    body = render_xml(report, leading_rule=False, include_heading=False)
+    run_lark(
+        [
+            "docs",
+            "+update",
+            "--as",
+            "user",
+            "--doc",
+            doc,
+            "--command",
+            "block_insert_after",
+            "--block-id",
+            heading_id,
+            "--content",
+            "-",
+        ],
+        stdin=body,
+    )
+    if old_body_ids:
+        run_lark(
+            [
+                "docs",
+                "+update",
+                "--as",
+                "user",
+                "--doc",
+                doc,
+                "--command",
+                "block_delete",
+                "--block-id",
+                ",".join(old_body_ids),
+            ]
+        )
+
+    verified = run_lark(
+        [
+            "docs",
+            "+fetch",
+            "--as",
+            "user",
+            "--doc",
+            doc,
+            "--scope",
+            "keyword",
+            "--keyword",
+            report["snapshot_at"],
+            "--detail",
+            "simple",
+        ]
+    )
+    check = (((verified.get("data") or {}).get("document") or {}).get("content") or "")
+    if report["snapshot_at"] not in check:
+        raise CollectionError("Feishu refresh returned success but the latest snapshot was not found")
+    return "updated"
+
+
 def overwrite_report(doc: str, date: str, xml: str) -> str:
     """Replace the tracker once when migrating it to the date-first structure."""
     verify_lark_user()
@@ -559,9 +719,9 @@ def overwrite_report(doc: str, date: str, xml: str) -> str:
 def collect(max_popular_pages: int) -> dict[str, Any]:
     """Collect, tag, classify, and aggregate all three Bilibili lists."""
     client = BilibiliClient()
+    weekly, weekly_slots, weekly_label, weekly_number = fetch_weekly(client)
     popular, popular_slots = fetch_popular(client, max_popular_pages)
     ranking, ranking_slots = fetch_ranking(client)
-    weekly, weekly_slots, weekly_label, weekly_number = fetch_weekly(client)
     tags, tag_errors = enrich(client, [popular, ranking, weekly])
     tag_total = len({video.bvid for group in [popular, ranking, weekly] for video in group})
     if len(tag_errors) > max(5, int(tag_total * 0.05)):
@@ -623,6 +783,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--write", action="store_true", help="Append the report to Feishu")
     parser.add_argument(
+        "--upsert",
+        action="store_true",
+        help="Append a new date or refresh the existing date section in Feishu",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Replace the document with the generic tracker title and today's date section",
@@ -640,9 +805,9 @@ def main() -> int:
     """Run collection and optionally perform the idempotent Feishu append."""
     args = parse_args()
     try:
-        if args.write and args.overwrite:
-            raise CollectionError("Choose only one of --write or --overwrite")
-        if (args.write or args.overwrite) and not args.doc:
+        if sum(bool(value) for value in [args.write, args.upsert, args.overwrite]) > 1:
+            raise CollectionError("Choose only one of --write, --upsert, or --overwrite")
+        if (args.write or args.upsert or args.overwrite) and not args.doc:
             raise CollectionError(
                 "Feishu document is required; pass --doc or set BILIBILI_AI_FEISHU_DOC"
             )
@@ -652,6 +817,8 @@ def main() -> int:
         if args.overwrite:
             xml = render_document(report)
             status = overwrite_report(args.doc, report["date"], xml)
+        elif args.upsert:
+            status = upsert_report(args.doc, report)
         elif args.write:
             status = write_report(args.doc, report["date"], xml)
         output = {
