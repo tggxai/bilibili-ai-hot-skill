@@ -1,4 +1,4 @@
 interface:
   display_name: "B站 AI 热门日报"
   short_description: "追踪 AI 科技、3C 数码与 AIGC，并生成飞书日报"
-  default_prompt: "使用 $track-bilibili-ai-hot 抓取当前 B 站榜单，区分 AI 科技应用、3C 数码与 AIGC，并写入或刷新当天飞书日报。"
+  default_prompt: "使用 $track-bilibili-ai-hot 抓取当前 B 站榜单，区分 AI 科技应用、3C 数码与 AIGC，并以写入和回读验证当天飞书日报作为最后一步。"
