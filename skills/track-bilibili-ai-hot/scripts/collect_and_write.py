@@ -498,7 +498,7 @@ def run_lark(
 
 def verify_lark_user() -> None:
     """Fail before document work when the Feishu user identity is unavailable."""
-    status = run_lark(["auth", "status", "--json", "--verify"], require_ok=False)
+    status = run_lark(["auth", "status", "--verify"], require_ok=False)
     user = ((status.get("identities") or {}).get("user") or {})
     if not status.get("verified") or user.get("status") != "ready":
         raise CollectionError("Feishu user identity is not ready or verified")
