@@ -1,11 +1,11 @@
 ---
 name: track-bilibili-ai-hot
-description: Collect the current Bilibili 综合热门、全站排行榜、每周必看 lists, classify videos into mutually exclusive AI software, AI hardware/3C, and AIGC content categories, identify product/brand and explicitly disclosed client labels, deduplicate them, append a date-first Feishu report, and sample the popular list to study its update cadence. Use for B站 AI/3C 热门日报、AI 软件监测、AI 硬件与 3C 数码榜单、AIGC 榜单统计、产品或甲方客户识别、热门更新规律观测、每日视频监测、复跑某天报告，或把榜单结果写入飞书文档。
+description: Collect the current Bilibili 综合热门、全站排行榜、每周必看 lists, classify videos into mutually exclusive AI software, technology hardware/3C, and AIGC content categories, identify product/brand and explicitly disclosed client labels, deduplicate them, append a date-first Feishu report, and sample the popular list to study its update cadence. Use for B站 AI/科技数码热门日报、AI 软件监测、AI 与科技硬件、3C 数码、创客工程、机械航模、航空航天、AIGC 榜单统计、产品或甲方客户识别、热门更新规律观测、每日视频监测、复跑某天报告，或把榜单结果写入飞书文档。
 ---
 
 # B站 AI 热门日报
 
-运行确定性脚本抓取榜单、读取视频标签并过滤误命中。每支视频只归入一个主分类：“AI 软件”“AI 硬件 / 3C”“AIGC 内容”，并单独标注可识别的产品、品牌和明确披露的甲方客户。B站“科技”分区只作为候选来源，不直接作为报告分类。写入时通过 `--doc` 或 `BILIBILI_AI_FEISHU_DOC` 指定目标飞书文档。
+运行确定性脚本抓取榜单、读取视频标签并过滤误命中。每支视频只归入一个主分类：“AI 软件”“科技硬件 / 3C”“AIGC 内容”，并单独标注可识别的产品、品牌和明确披露的甲方客户。B站分区只作为候选来源，不直接作为报告分类。写入时通过 `--doc` 或 `BILIBILI_AI_FEISHU_DOC` 指定目标飞书文档。
 
 ## 工作流
 
@@ -29,9 +29,9 @@ description: Collect the current Bilibili 综合热门、全站排行榜、每�
 - 综合热门持续翻页到首个空页，最多 50 页；当前通常为 25 页、500 个榜单位。
 - 排行榜使用全站榜单；每周必看使用最新一期。
 - **AI 软件**：教程、工具、模型、智能体、软件、AI 编程、AI 游戏/应用与 AI 安全。
-- **AI 硬件 / 3C**：AI 眼镜、机器人与具身智能设备，以及手机通信、电脑硬件、影像影音、外设与游戏硬件、智能穿戴和智能家居。必须有具体设备、硬件或品类证据；不能只因处于“科技”或“数码”分区就纳入。
+- **科技硬件 / 3C**：AI 眼镜、机器人与具身智能设备；手机、电脑、系统、影像影音、外设、智能穿戴与家居；以及有明确标题或标签证据的创客工程、机械航模、航空航天和科技实验。不能只因处于“科技”“数码”或“极客 DIY”分区就纳入。
 - **AIGC 内容**：AI 视频、音乐、动画、短剧、配音、AI 辅助创作，以及使用 Updream、MiniMax、Seedance、Seko 等工具生成的成片。
-- 三个主分类按视频内容主轴互斥：软件教程/工具归 AI 软件，设备与 3C 产品归 AI 硬件 / 3C，作品展示归 AIGC 内容。
+- 三个主分类按视频内容主轴互斥：软件教程/工具归 AI 软件，设备、数码与硬科技归科技硬件 / 3C，作品展示归 AIGC 内容。
 - **产品 / 客户标签**是附加维度：产品名与普通品牌露出分别标为“产品”“品牌”；只有标题、简介或标签明确披露合作、赞助、推广或联合出品时才标为“客户”。不根据推测把普通品牌提及当作甲方。
 - 反诈提醒、禁用声明、“不是 AI”、作者名或被 @ 用户名里的偶然字符串不计入。
 - 同一 BV 号在同一榜单只计一次；三榜总数另按 BV 号去重。
@@ -40,7 +40,7 @@ description: Collect the current Bilibili 综合热门、全站排行榜、每�
 
 - 文档标题固定为 `B站 AI 热门日报`；每个日期使用 `YYYY-MM-DD` 一级标题，时区固定为 `Asia/Shanghai`。
 - 日期章节按日期倒序排列，最新日期紧跟日报说明，历史日期依次向下。
-- 每个日期下面只使用三个二级标题：`AI 软件`、`AI 硬件 / 3C`、`AIGC 内容`。三榜来源和榜位合并到表格行中，不重复创建三套章节。
+- 每个日期下面只使用三个二级标题：`AI 软件`、`科技硬件 / 3C`、`AIGC 内容`。三榜来源和榜位合并到表格行中，不重复创建三套章节。
 - 写入前按日期一级标题查询目标文档；当天不存在则插入所有旧日期之前，已存在则只替换当天标题下的内容并确保当天在顶部。
 - 写入内容包含分类摘要、产品 / 客户标签、视频链接、来源/榜位、UP 主和判定依据。
 - 写入后再次查询最新抓取时间；未命中则视为失败。

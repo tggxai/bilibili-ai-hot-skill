@@ -76,7 +76,8 @@ THREE_C_PATTERNS = [
         "手机通信",
         re.compile(
             r"手机|平板|iPhone|iPad|Android|安卓|鸿蒙|HarmonyOS|Pixel|Galaxy|"
-            r"折叠屏|路由器|Wi-?Fi|基带|骁龙|天玑|红米|荣耀|OPPO|vivo|一加|真我|魅族",
+            r"澎湃OS|HyperOS|折叠屏|路由器|Wi-?Fi|基带|骁龙|天玑|红米|荣耀|"
+            r"OPPO|vivo|iQOO|一加|真我|魅族",
             re.IGNORECASE,
         ),
     ),
@@ -123,9 +124,12 @@ THREE_C_PATTERNS = [
     ),
 ]
 THREE_C_CATEGORY_HINTS = {"数码", "极客DIY"}
-THREE_C_WEAK_TERM = re.compile(r"手机|平板|电脑|镜头|麦克风|耳机|音箱|音响|电视|投影仪", re.IGNORECASE)
+THREE_C_WEAK_TERM = re.compile(
+    r"手机|平板|电脑|荣耀|镜头|麦克风|耳机|音箱|音响|电视|投影仪",
+    re.IGNORECASE,
+)
 THREE_C_STRONG_TERM = re.compile(
-    r"iPhone|iPad|Android|安卓|鸿蒙|HarmonyOS|Pixel|Galaxy|折叠屏|路由器|Wi-?Fi|"
+    r"iPhone|iPad|Android|安卓|鸿蒙|HarmonyOS|澎湃OS|HyperOS|Pixel|Galaxy|折叠屏|路由器|Wi-?Fi|"
     r"MacBook|MateBook|Mac\s*mini|Mac\s*Studio|AI\s*PC|显卡|GPU|CPU|处理器|主板|内存|硬盘|SSD|NAS|"
     r"相机|摄像机|无人机|GoPro|大疆|DJI|HiFi|游戏机|掌机|Switch|PlayStation|PS5|Xbox|"
     r"智能手表|智能手环|智能穿戴|智能家居|HomeKit|扫地机器人|智能门锁|空气净化器|"
@@ -143,6 +147,24 @@ THREE_C_COMPUTER_OVERRIDE = re.compile(
     re.IGNORECASE,
 )
 THREE_C_SOFTWARE_CONTEXT = re.compile(r"手机游戏|手游|端游|网游", re.IGNORECASE)
+GAME_CATEGORY_TERM = re.compile(r"游戏|电子竞技", re.IGNORECASE)
+EXTENDED_TECH_CATEGORY_HINTS = {"极客DIY", "科工机械"}
+EXTENDED_TECH_PATTERNS = [
+    (
+        "创客工程",
+        re.compile(
+            r"遥控车|航模|机翼|机械|工程|DIY|手工|模拟器|机器人|改造|自制|造了?一台",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "航空航天",
+        re.compile(
+            r"火箭|卫星|航天|航空|发射|着陆|回收|运载|朱雀|蓝箭航天|飞船|空间站",
+            re.IGNORECASE,
+        ),
+    ),
+]
 ENTITY_PATTERNS = [
     ("ChatGPT", "产品", re.compile(r"ChatGPT|GPT-[0-9.]+", re.IGNORECASE)),
     ("OpenAI", "品牌", re.compile(r"OpenAI", re.IGNORECASE)),
@@ -184,8 +206,11 @@ ENTITY_PATTERNS = [
     ("Vision Pro", "产品", re.compile(r"Vision\s*Pro", re.IGNORECASE)),
     ("华为", "品牌", re.compile(r"华为", re.IGNORECASE)),
     ("鸿蒙 / HarmonyOS", "产品", re.compile(r"鸿蒙|HarmonyOS", re.IGNORECASE)),
+    ("澎湃 OS / HyperOS", "产品", re.compile(r"澎湃\s*OS|Hyper\s*OS", re.IGNORECASE)),
     ("MateBook", "产品", re.compile(r"MateBook", re.IGNORECASE)),
     ("小米 / 红米", "品牌", re.compile(r"小米|红米|Redmi", re.IGNORECASE)),
+    ("iQOO", "品牌", re.compile(r"iQOO", re.IGNORECASE)),
+    ("iQOO Neo", "产品", re.compile(r"iQOO\s*Neo\s*\d+", re.IGNORECASE)),
     ("荣耀", "品牌", re.compile(r"荣耀", re.IGNORECASE)),
     ("OPPO", "品牌", re.compile(r"OPPO", re.IGNORECASE)),
     ("vivo", "品牌", re.compile(r"vivo", re.IGNORECASE)),
@@ -210,6 +235,8 @@ ENTITY_PATTERNS = [
     ("Steam Deck", "产品", re.compile(r"Steam\s*Deck", re.IGNORECASE)),
     ("Meta Quest", "产品", re.compile(r"Meta\s*Quest", re.IGNORECASE)),
     ("宇树 / Unitree", "品牌", re.compile(r"宇树|Unitree", re.IGNORECASE)),
+    ("蓝箭航天", "品牌", re.compile(r"蓝箭航天", re.IGNORECASE)),
+    ("朱雀三号", "产品", re.compile(r"朱雀三号", re.IGNORECASE)),
 ]
 AI_ENTITY_NAMES = {
     "ChatGPT",
@@ -428,7 +455,10 @@ def fetch_weekly(client: BilibiliClient) -> tuple[list[Video], int, str, int]:
 
 def fetch_tags(client: BilibiliClient, bvid: str) -> list[str]:
     """Fetch Bilibili tags for one video."""
-    payload = client.get("/x/web-interface/view/detail/tag", {"bvid": bvid})
+    try:
+        payload = client.get("/x/tag/archive/tags", {"bvid": bvid})
+    except CollectionError:
+        payload = client.get("/x/web-interface/view/detail/tag", {"bvid": bvid})
     return [str(tag.get("tag_name") or "") for tag in (payload.get("data") or []) if tag.get("tag_name")]
 
 
@@ -483,14 +513,18 @@ def classify(video: Video, tags: list[str]) -> tuple[str | None, str]:
 
 
 def classify_three_c(video: Video, tags: list[str]) -> tuple[str | None, str]:
-    """Identify business-relevant 3C hardware independently from AI labels."""
+    """Identify concrete digital, hardware, maker, and hard-tech subjects."""
     evidence_sources = [("标题", video.title)]
     if video.category in THREE_C_CATEGORY_HINTS and tags:
         evidence_sources.append(("标签", " ".join(tags)))
     for source, evidence_text in evidence_sources:
         computer_match = THREE_C_COMPUTER_OVERRIDE.search(evidence_text)
-        if computer_match and (source == "标题" or THREE_C_STRONG_TERM.search(evidence_text)):
-            reasons = ["3C品类：电脑硬件", f"{source}命中：{computer_match.group(0)}"]
+        if computer_match and (
+            THREE_C_STRONG_TERM.search(evidence_text)
+            or video.category in THREE_C_CATEGORY_HINTS
+            or (source == "标题" and THREE_C_PRODUCT_CONTEXT.search(video.title))
+        ):
+            reasons = ["科技硬件品类：电脑硬件", f"{source}命中：{computer_match.group(0)}"]
             if video.category in THREE_C_CATEGORY_HINTS:
                 reasons.append(f"B站{video.category}分区")
             return "电脑硬件", "；".join(reasons)
@@ -502,7 +536,10 @@ def classify_three_c(video: Video, tags: list[str]) -> tuple[str | None, str]:
                 continue
             if (
                 product_group == "手机通信"
-                and THREE_C_SOFTWARE_CONTEXT.search(video.title)
+                and (
+                    THREE_C_SOFTWARE_CONTEXT.search(video.title)
+                    or GAME_CATEGORY_TERM.search(video.category)
+                )
                 and not THREE_C_STRONG_TERM.search(video.title)
             ):
                 continue
@@ -514,10 +551,22 @@ def classify_three_c(video: Video, tags: list[str]) -> tuple[str | None, str]:
                 and not THREE_C_PRODUCT_CONTEXT.search(video.title)
             ):
                 continue
-            reasons = [f"3C品类：{product_group}", f"{source}命中：{match.group(0)}"]
+            reasons = [f"科技硬件品类：{product_group}", f"{source}命中：{match.group(0)}"]
             if video.category in THREE_C_CATEGORY_HINTS:
                 reasons.append(f"B站{video.category}分区")
             return product_group, "；".join(reasons)
+    if video.category in EXTENDED_TECH_CATEGORY_HINTS:
+        evidence = f"{video.title} {' '.join(tags)}"
+        for product_group, pattern in EXTENDED_TECH_PATTERNS:
+            match = pattern.search(evidence)
+            if match:
+                return product_group, "；".join(
+                    [
+                        f"科技硬件品类：{product_group}",
+                        f"标题/标签命中：{match.group(0)}",
+                        f"B站{video.category}分区",
+                    ]
+                )
     return None, ""
 
 
@@ -538,7 +587,7 @@ def extract_product_client_tags(
             continue
         if (
             not title_match
-            and business_category != "AI硬件/3C"
+            and business_category != "科技硬件/3C"
             and name not in AI_ENTITY_NAMES
             and not (entity_type == "品牌" and CLIENT_CONTEXT.search(secondary_evidence))
         ):
@@ -595,7 +644,7 @@ def select(videos: list[Video], tags: dict[str, list[str]]) -> list[dict[str, An
         if direction == "AIGC生成内容":
             business_category = "AIGC内容"
         elif three_c_category:
-            business_category = "AI硬件/3C"
+            business_category = "科技硬件/3C"
         elif direction == "AI科技应用":
             business_category = "AI软件"
         else:
@@ -697,7 +746,7 @@ def render_xml(
     ranking = report["ranking"]
     weekly = report["weekly"]
     software = merge_category(report, "AI软件")
-    hardware = merge_category(report, "AI硬件/3C")
+    hardware = merge_category(report, "科技硬件/3C")
     aigc = merge_category(report, "AIGC内容")
     prefix = "<hr/>" if leading_rule else ""
     heading = f"<h1>{x(report['date'])}</h1>" if include_heading else ""
@@ -712,32 +761,32 @@ def render_xml(
             "<thead><tr><th background-color=\"light-gray\">榜单</th>"
             "<th background-color=\"light-gray\">规模</th>"
             "<th background-color=\"light-blue\">AI 软件</th>"
-            "<th background-color=\"light-blue\">AI 硬件 / 3C</th>"
+            "<th background-color=\"light-blue\">科技硬件 / 3C</th>"
             "<th background-color=\"light-gray\">AIGC 内容</th>"
             "<th background-color=\"light-gray\">相关视频</th></tr></thead><tbody>",
             f"<tr><td>综合热门</td><td>{popular['total_slots']}</td>"
             f"<td>{count_category(popular, 'AI软件')}</td>"
-            f"<td>{count_category(popular, 'AI硬件/3C')}</td>"
+            f"<td>{count_category(popular, '科技硬件/3C')}</td>"
             f"<td>{count_category(popular, 'AIGC内容')}</td><td>{popular['related_count']}</td></tr>",
             f"<tr><td>全站排行榜</td><td>{ranking['total_slots']}</td>"
             f"<td>{count_category(ranking, 'AI软件')}</td>"
-            f"<td>{count_category(ranking, 'AI硬件/3C')}</td>"
+            f"<td>{count_category(ranking, '科技硬件/3C')}</td>"
             f"<td>{count_category(ranking, 'AIGC内容')}</td><td>{ranking['related_count']}</td></tr>",
             f"<tr><td>每周必看第 {weekly['number']} 期</td><td>{weekly['total_slots']}</td>"
             f"<td>{count_category(weekly, 'AI软件')}</td>"
-            f"<td>{count_category(weekly, 'AI硬件/3C')}</td>"
+            f"<td>{count_category(weekly, '科技硬件/3C')}</td>"
             f"<td>{count_category(weekly, 'AIGC内容')}</td><td>{weekly['related_count']}</td></tr>",
             "</tbody></table>",
-            f"<p><b>三榜去重：</b>AI 软件 {len(software)} 支，AI 硬件 / 3C {len(hardware)} 支，"
+            f"<p><b>三榜去重：</b>AI 软件 {len(software)} 支，科技硬件 / 3C {len(hardware)} 支，"
             f"AIGC 内容 {len(aigc)} 支。三类互斥；科技分区只用于召回，不直接作为分类。</p>",
             f"<h2>AI 软件（{len(software)} 支）</h2>",
             render_table(software),
-            f"<h2>AI 硬件 / 3C（{len(hardware)} 支）</h2>",
+            f"<h2>科技硬件 / 3C（{len(hardware)} 支）</h2>",
             render_table(hardware),
             f"<h2>AIGC 内容（{len(aigc)} 支）</h2>",
             render_table(aigc),
             "<p><b>口径：</b>模型、智能体、工具、教程、软件和 AI 编程归入 AI 软件；"
-            "AI 设备、机器人、手机、电脑、影像影音、外设和智能穿戴家居归入 AI 硬件 / 3C；"
+            "AI 设备、机器人、消费数码、创客工程、机械航模和航空航天归入科技硬件 / 3C；"
             "AI 视频、音乐、动画、短剧、配音和生成工具成片归入 AIGC 内容。"
             "“客户”标签仅用于标题、简介或标签明确披露合作、赞助或联合出品的品牌；其他命中只标产品/品牌。"
             "反诈提醒、禁用声明和“不是 AI”等偶然命中排除。</p>",
@@ -750,7 +799,7 @@ def render_document(report: dict[str, Any]) -> str:
     return "".join(
         [
             "<title>B站 AI 热门日报</title>",
-            "<p>每日记录综合热门、全站排行榜和每周必看中的 AI 软件、AI 硬件 / 3C 与 AIGC 内容，"
+            "<p>每日记录综合热门、全站排行榜和每周必看中的 AI 软件、科技硬件 / 3C 与 AIGC 内容，"
             "并标注可识别的产品、品牌和明确披露的客户。科技分区仅作为候选池。</p>",
             render_xml(report, leading_rule=False),
         ]
@@ -1131,7 +1180,7 @@ def collect(max_popular_pages: int) -> dict[str, Any]:
         item["bvid"] for item in all_selected if item["business_category"] == "AI软件"
     }
     unique_hardware = {
-        item["bvid"] for item in all_selected if item["business_category"] == "AI硬件/3C"
+        item["bvid"] for item in all_selected if item["business_category"] == "科技硬件/3C"
     }
     unique_aigc = {
         item["bvid"] for item in all_selected if item["business_category"] == "AIGC内容"
@@ -1183,7 +1232,7 @@ def load_report(path: str) -> dict[str, Any]:
     snapshot_at = payload.get("snapshot_at")
     if not isinstance(snapshot_at, str) or not snapshot_at.startswith(today):
         raise CollectionError("Imported report has an invalid snapshot timestamp")
-    categories = {"AI软件", "AI硬件/3C", "AIGC内容"}
+    categories = {"AI软件", "科技硬件/3C", "AIGC内容"}
     all_items: list[dict[str, Any]] = []
     for source in ["popular", "ranking", "weekly"]:
         group = payload.get(source)
@@ -1205,7 +1254,7 @@ def load_report(path: str) -> dict[str, Any]:
     }
     expected_counts = {
         "unique_software_count": len(unique_by_category["AI软件"]),
-        "unique_hardware_count": len(unique_by_category["AI硬件/3C"]),
+        "unique_hardware_count": len(unique_by_category["科技硬件/3C"]),
         "unique_aigc_count": len(unique_by_category["AIGC内容"]),
         "unique_related_count": len({item["bvid"] for item in all_items}),
     }
@@ -1281,14 +1330,14 @@ def main() -> int:
                 "total": report["popular"]["total_slots"],
                 "related_count": report["popular"]["related_count"],
                 "software_count": count_category(report["popular"], "AI软件"),
-                "hardware_count": count_category(report["popular"], "AI硬件/3C"),
+                "hardware_count": count_category(report["popular"], "科技硬件/3C"),
                 "aigc_count": count_category(report["popular"], "AIGC内容"),
             },
             "ranking": {
                 "total": report["ranking"]["total_slots"],
                 "related_count": report["ranking"]["related_count"],
                 "software_count": count_category(report["ranking"], "AI软件"),
-                "hardware_count": count_category(report["ranking"], "AI硬件/3C"),
+                "hardware_count": count_category(report["ranking"], "科技硬件/3C"),
                 "aigc_count": count_category(report["ranking"], "AIGC内容"),
             },
             "weekly": {
@@ -1296,7 +1345,7 @@ def main() -> int:
                 "total": report["weekly"]["total_slots"],
                 "related_count": report["weekly"]["related_count"],
                 "software_count": count_category(report["weekly"], "AI软件"),
-                "hardware_count": count_category(report["weekly"], "AI硬件/3C"),
+                "hardware_count": count_category(report["weekly"], "科技硬件/3C"),
                 "aigc_count": count_category(report["weekly"], "AIGC内容"),
             },
             "unique_related_count": report["unique_related_count"],

@@ -1,11 +1,11 @@
 # B站 AI 热门日报 Skill
 
-一个可复用的 Codex Skill：每日抓取 B站的「综合热门」「全站排行榜」和最新一期「每周必看」，把相关视频归为 AI 软件、AI 硬件 / 3C 或 AIGC 内容，并把结果写成按日期累积的飞书日报。它也可以持续采样综合热门，分析榜单的实际更新规律。
+一个可复用的 Codex Skill：每日抓取 B站的「综合热门」「全站排行榜」和最新一期「每周必看」，把相关视频归为 AI 软件、科技硬件 / 3C 或 AIGC 内容，并把结果写成按日期累积的飞书日报。它也可以持续采样综合热门，分析榜单的实际更新规律。
 
 它使用三个互斥的主分类：
 
 - **AI 软件**：教程、工具、模型、智能体、AI 编程、AI 游戏/应用与 AI 安全。
-- **AI 硬件 / 3C**：AI 眼镜、机器人与具身智能设备，以及手机、电脑、影像影音、外设、游戏硬件、智能穿戴与智能家居。
+- **科技硬件 / 3C**：AI 设备、手机电脑与系统、影像外设、智能穿戴家居，以及有明确证据的创客工程、机械航模、航空航天和科技实验。
 - **AIGC 内容**：AI 视频、音乐、动画、短剧、配音、AI 辅助创作，以及由 Updream、MiniMax、Seedance、Seko 等工具生成的成片。
 
 报告另有一列“产品 / 客户标签”：普通命中标产品或品牌；只有视频明确披露合作、赞助、推广或联合出品时才标为客户。B站“科技”分区只作为候选池，不会直接变成报告分类。
@@ -31,7 +31,7 @@
 B站 AI 热门日报
 └── 2026-08-19
     ├── AI 软件
-    ├── AI 硬件 / 3C
+    ├── 科技硬件 / 3C
     └── AIGC 内容
 ```
 
@@ -119,7 +119,7 @@ python3 scripts/collect_and_write.py --overwrite --doc "飞书文档 URL 或 tok
 - `status`：`dry_run`、`written`、`updated`、`already_exists` 或 `overwritten`
 - `popular`、`ranking`、`weekly`：各榜单规模与三个主分类的数量
 - `unique_software_count`：三榜去重后的 AI 软件数量
-- `unique_hardware_count`：三榜去重后的 AI 硬件 / 3C 数量
+- `unique_hardware_count`：三榜去重后的科技硬件 / 3C 数量
 - `unique_aigc_count`：三榜去重后的 AIGC 数量
 - `unique_related_count`：三榜去重后的全部相关视频数量
 - `tag_error_count`：B站标签请求失败数量
@@ -131,7 +131,7 @@ python3 scripts/collect_and_write.py --overwrite --doc "飞书文档 URL 或 tok
 
 ```text
 使用 $track-bilibili-ai-hot 执行每日监测，抓取综合热门、全站排行榜和最新每周必看，
-区分“AI 软件”“AI 硬件 / 3C”与“AIGC 内容”，标注产品、品牌和明确披露的客户，
+区分“AI 软件”“科技硬件 / 3C”与“AIGC 内容”，覆盖消费数码、创客工程和航空航天，标注产品、品牌和明确披露的客户，
 并写入或刷新配置的飞书文档当天章节。
 接口限流或完整性校验失败时不要写入不完整数据。
 ```
