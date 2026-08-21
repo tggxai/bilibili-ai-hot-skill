@@ -1114,7 +1114,7 @@ def verify_lark_user() -> None:
         raise CollectionError("Feishu user identity is not ready or verified")
 
 
-def write_report(doc: str, date: str, xml: str) -> str:
+def write_report(doc: str, date: str, snapshot_at: str, xml: str) -> str:
     """Append one idempotent report section and verify it by keyword lookup."""
     verify_lark_user()
     existing = run_lark(
@@ -1141,25 +1141,7 @@ def write_report(doc: str, date: str, xml: str) -> str:
         ["docs", "+update", "--as", "user", "--doc", doc, "--command", "append", "--content", "-"],
         stdin=xml,
     )
-    verified = run_lark(
-        [
-            "docs",
-            "+fetch",
-            "--as",
-            "user",
-            "--doc",
-            doc,
-            "--scope",
-            "keyword",
-            "--keyword",
-            date,
-            "--detail",
-            "simple",
-        ]
-    )
-    check = (((verified.get("data") or {}).get("document") or {}).get("content") or "")
-    if date not in check:
-        raise CollectionError("Feishu append returned success but the daily marker was not found")
+    verify_report_section(doc, date, snapshot_at)
     return "written"
 
 
@@ -1238,6 +1220,78 @@ def section_body_ids(content: str, date: str) -> list[str]:
     return [str(block_id) for block_id in ids]
 
 
+def verify_report_section(doc: str, date: str, snapshot_at: str) -> None:
+    """Verify newest-first placement, the four H2 sections, and podcast table columns."""
+    outline = run_lark(
+        [
+            "docs",
+            "+fetch",
+            "--as",
+            "user",
+            "--doc",
+            doc,
+            "--scope",
+            "outline",
+            "--max-depth",
+            "1",
+            "--detail",
+            "with-ids",
+            "--doc-format",
+            "xml",
+        ]
+    )
+    outline_content = (
+        ((outline.get("data") or {}).get("document") or {}).get("content") or ""
+    )
+    headings = date_heading_ids(outline_content)
+    if not headings or headings[0][0] != date:
+        raise CollectionError("Feishu readback did not place today's date first")
+    heading_id = find_date_heading_id(outline_content, date)
+    if not heading_id:
+        raise CollectionError("Feishu readback could not find today's date heading")
+    section = run_lark(
+        [
+            "docs",
+            "+fetch",
+            "--as",
+            "user",
+            "--doc",
+            doc,
+            "--scope",
+            "section",
+            "--start-block-id",
+            heading_id,
+            "--detail",
+            "simple",
+            "--doc-format",
+            "xml",
+        ]
+    )
+    content = (((section.get("data") or {}).get("document") or {}).get("content") or "")
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise CollectionError(f"Feishu report readback returned invalid XML: {exc}") from exc
+    h2_labels = [
+        re.sub(r"（\d+ 支）$", "", "".join(node.itertext()).strip())
+        for node in root.iter("h2")
+    ]
+    expected_h2 = ["AI 软件", "科技硬件 / 3C", "AIGC 内容", "视频播客机会"]
+    if h2_labels != expected_h2:
+        raise CollectionError(f"Feishu readback had unexpected H2 sections: {h2_labels}")
+    section_text = "".join(root.itertext())
+    required_markers = [
+        snapshot_at,
+        "产品 / 客户标签",
+        "主题",
+        "播放",
+        "机会依据",
+    ]
+    missing = [marker for marker in required_markers if marker not in section_text]
+    if missing:
+        raise CollectionError(f"Feishu readback missed report markers: {missing}")
+
+
 def upsert_report(doc: str, report: dict[str, Any]) -> str:
     """Append a new date or refresh only the existing date section."""
     verify_lark_user()
@@ -1267,7 +1321,7 @@ def upsert_report(doc: str, report: dict[str, Any]) -> str:
     heading_id = find_date_heading_id(outline_content, date)
     if not heading_id:
         if not headings:
-            return write_report(doc, date, render_xml(report))
+            return write_report(doc, date, report["snapshot_at"], render_xml(report))
         anchor_id = report_anchor_id(doc, document_id)
         run_lark(
             [
@@ -1286,25 +1340,7 @@ def upsert_report(doc: str, report: dict[str, Any]) -> str:
             ],
             stdin=render_xml(report, leading_rule=False),
         )
-        verified = run_lark(
-            [
-                "docs",
-                "+fetch",
-                "--as",
-                "user",
-                "--doc",
-                doc,
-                "--scope",
-                "keyword",
-                "--keyword",
-                report["snapshot_at"],
-                "--detail",
-                "simple",
-            ]
-        )
-        check = (((verified.get("data") or {}).get("document") or {}).get("content") or "")
-        if report["snapshot_at"] not in check:
-            raise CollectionError("Feishu insert returned success but the latest snapshot was not found")
+        verify_report_section(doc, date, report["snapshot_at"])
         return "written"
 
     section = run_lark(
@@ -1379,54 +1415,18 @@ def upsert_report(doc: str, report: dict[str, Any]) -> str:
             ]
         )
 
-    verified = run_lark(
-        [
-            "docs",
-            "+fetch",
-            "--as",
-            "user",
-            "--doc",
-            doc,
-            "--scope",
-            "keyword",
-            "--keyword",
-            report["snapshot_at"],
-            "--detail",
-            "simple",
-        ]
-    )
-    check = (((verified.get("data") or {}).get("document") or {}).get("content") or "")
-    if report["snapshot_at"] not in check:
-        raise CollectionError("Feishu refresh returned success but the latest snapshot was not found")
+    verify_report_section(doc, date, report["snapshot_at"])
     return "updated"
 
 
-def overwrite_report(doc: str, date: str, xml: str) -> str:
+def overwrite_report(doc: str, date: str, snapshot_at: str, xml: str) -> str:
     """Replace the tracker once when migrating it to the date-first structure."""
     verify_lark_user()
     run_lark(
         ["docs", "+update", "--as", "user", "--doc", doc, "--command", "overwrite", "--content", "-"],
         stdin=xml,
     )
-    verified = run_lark(
-        [
-            "docs",
-            "+fetch",
-            "--as",
-            "user",
-            "--doc",
-            doc,
-            "--scope",
-            "keyword",
-            "--keyword",
-            date,
-            "--detail",
-            "simple",
-        ]
-    )
-    content = (((verified.get("data") or {}).get("document") or {}).get("content") or "")
-    if date not in content:
-        raise CollectionError("Feishu overwrite returned success but the date heading was not found")
+    verify_report_section(doc, date, snapshot_at)
     return "overwritten"
 
 
@@ -1643,11 +1643,11 @@ def main() -> int:
         status = "dry_run"
         if args.overwrite:
             xml = render_document(report)
-            status = overwrite_report(args.doc, report["date"], xml)
+            status = overwrite_report(args.doc, report["date"], report["snapshot_at"], xml)
         elif args.upsert:
             status = upsert_report(args.doc, report)
         elif args.write:
-            status = write_report(args.doc, report["date"], xml)
+            status = write_report(args.doc, report["date"], report["snapshot_at"], xml)
         output = {
             "ok": True,
             "status": status,
