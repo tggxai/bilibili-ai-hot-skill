@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect Bilibili AI-related popular videos and append a Feishu report."""
+"""Collect Bilibili AI/tech and video-podcast opportunities into a Feishu report."""
 
 from __future__ import annotations
 
@@ -31,6 +31,10 @@ UA = (
 )
 API = "https://api.bilibili.com"
 VIDEO_URL = "https://www.bilibili.com/video/{bvid}/"
+PODCAST_ZONE_URL = "https://www.bilibili.com/blackboard/era/jpyPhRRrMn3fmZ2B.html"
+PODCAST_MEDIA_ID = 3628308062
+PODCAST_PAGE_SIZE = 12
+PODCAST_API = "https://api.bilibili.com/medialist/gateway/base/detail"
 
 AI_TERM = re.compile(
     r"(?<![A-Za-z0-9])AI(?![A-Za-z0-9])|AIGC|人工智能|大模型|智能体|"
@@ -58,6 +62,15 @@ TECH_CONTEXT = re.compile(
     r"教程|工具|应用|实测|网站|开源|插件|编程|代码|软件|产品|项目|游戏|"
     r"模型|智能体|Agent|机器人|眼镜|安全|漏洞|渗透|游戏开发|自制游戏|"
     r"BilibiliToy|数字生命|监督学习|番茄钟|技术|实验|部署|API",
+    re.IGNORECASE,
+)
+AI_APPLICATION_STRONG_TERM = re.compile(
+    r"教程|工具|网站|开源|插件|编程|代码|软件|模型|智能体|Agent|机器人|眼镜|安全|漏洞|"
+    r"部署|API|系统|平台|算法|算力|训练|推理|实测|产品功能|技术实现",
+    re.IGNORECASE,
+)
+FINANCE_DISCUSSION_TERM = re.compile(
+    r"投资|基金|行情|赛道|估值|股票|资本|财富|交易|抄底|逃顶",
     re.IGNORECASE,
 )
 CREATIVE_CATEGORY = re.compile(
@@ -168,6 +181,8 @@ EXTENDED_TECH_PATTERNS = [
 ENTITY_PATTERNS = [
     ("ChatGPT", "产品", re.compile(r"ChatGPT|GPT-[0-9.]+", re.IGNORECASE)),
     ("OpenAI", "品牌", re.compile(r"OpenAI", re.IGNORECASE)),
+    ("OKX Agent Trade Kit", "产品", re.compile(r"OKX\s*Agent\s*Trade\s*Kit", re.IGNORECASE)),
+    ("OKX", "品牌", re.compile(r"(?<![A-Za-z])OKX(?![A-Za-z])", re.IGNORECASE)),
     ("Claude", "产品", re.compile(r"Claude", re.IGNORECASE)),
     ("Anthropic", "品牌", re.compile(r"Anthropic", re.IGNORECASE)),
     ("Gemini", "产品", re.compile(r"Gemini", re.IGNORECASE)),
@@ -241,6 +256,8 @@ ENTITY_PATTERNS = [
 AI_ENTITY_NAMES = {
     "ChatGPT",
     "OpenAI",
+    "OKX Agent Trade Kit",
+    "OKX",
     "Claude",
     "Anthropic",
     "Gemini",
@@ -283,6 +300,17 @@ CLIENT_CONTEXT = re.compile(
     r"赞助商|联合出品|推广合作",
     re.IGNORECASE,
 )
+PODCAST_EXPLICIT_TERM = re.compile(r"视频播客|播客|Podcast", re.IGNORECASE)
+PODCAST_STRONG_TAG = re.compile(r"^(?:视频播客|播客|Podcast)$", re.IGNORECASE)
+PODCAST_CONVERSATION_TERM = re.compile(
+    r"对话|对谈|访谈|专访|圆桌|聊天|漫谈|慢谈|谈话|夜谈|会客厅|聊天室|Conversation|Interview",
+    re.IGNORECASE,
+)
+PODCAST_EPISODE_TERM = re.compile(
+    r"(?:^|[^A-Za-z])(?:EP(?:ISODE)?|VOL|NO)[.\s#_-]*\d+|第\s*\d+\s*[期集]|\d+\s*期",
+    re.IGNORECASE,
+)
+PODCAST_ROLE_TERM = re.compile(r"本期(?:节目|主播|嘉宾)|主持人|主播[:：]|嘉宾[:：]", re.IGNORECASE)
 
 
 class CollectionError(RuntimeError):
@@ -301,6 +329,8 @@ class Video:
     description: str
     view: int
     like: int
+    duration: int
+    pubtime: int
 
 
 class BilibiliClient:
@@ -393,6 +423,26 @@ def normalize_video(item: dict[str, Any], position: int) -> Video:
         description=str(item.get("desc") or ""),
         view=int(stat.get("view") or 0),
         like=int(stat.get("like") or 0),
+        duration=int(item.get("duration") or 0),
+        pubtime=int(item.get("pubdate") or item.get("ctime") or 0),
+    )
+
+
+def normalize_podcast_video(item: dict[str, Any], position: int) -> Video:
+    """Convert one official video-podcast playlist item into report metadata."""
+    counts = item.get("cnt_info") or {}
+    owner = item.get("upper") or {}
+    return Video(
+        position=position,
+        bvid=str(item.get("bvid") or item.get("bv_id") or ""),
+        title=str(item.get("title") or ""),
+        category="",
+        owner=str(owner.get("name") or ""),
+        description=str(item.get("intro") or ""),
+        view=int(counts.get("play") or 0),
+        like=int(counts.get("thumb_up") or 0),
+        duration=int(item.get("duration") or 0),
+        pubtime=int(item.get("pubtime") or item.get("ctime") or 0),
     )
 
 
@@ -453,6 +503,48 @@ def fetch_weekly(client: BilibiliClient) -> tuple[list[Video], int, str, int]:
     return dedupe(videos), len(items), label, number
 
 
+def fetch_podcast_playlist(client: BilibiliClient) -> tuple[list[Video], int]:
+    """Fetch the complete official video-podcast playlist without treating it as a ranking."""
+    videos: list[Video] = []
+    media_count: int | None = None
+    page = 1
+    while page <= 100:
+        payload = client.get(
+            PODCAST_API,
+            {"media_id": PODCAST_MEDIA_ID, "pn": page, "ps": PODCAST_PAGE_SIZE},
+        )
+        data = payload.get("data") or {}
+        info = data.get("info") or {}
+        current_count = int(info.get("media_count") or 0)
+        if current_count <= 0:
+            raise CollectionError("视频播客专区 returned an invalid playlist size")
+        if media_count is None:
+            media_count = current_count
+        elif current_count != media_count:
+            raise CollectionError("视频播客专区 changed while it was being collected")
+        items = data.get("medias") or []
+        if not items:
+            if len(videos) < media_count:
+                raise CollectionError("视频播客专区 ended before the advertised playlist size")
+            break
+        start = (page - 1) * PODCAST_PAGE_SIZE
+        videos.extend(
+            normalize_podcast_video(item, start + offset)
+            for offset, item in enumerate(items, start=1)
+        )
+        if len(videos) >= media_count:
+            break
+        page += 1
+    assert media_count is not None
+    unique = dedupe(videos)
+    duplicate_count = len(videos) - len(unique)
+    if len(videos) != media_count or duplicate_count > max(2, int(media_count * 0.01)):
+        raise CollectionError(
+            f"视频播客专区完整性校验失败：抓取 {len(videos)}，去重 {len(unique)}，页面声明 {media_count}"
+        )
+    return unique, media_count
+
+
 def fetch_tags(client: BilibiliClient, bvid: str) -> list[str]:
     """Fetch Bilibili tags for one video."""
     try:
@@ -477,6 +569,12 @@ def classify(video: Video, tags: list[str]) -> tuple[str | None, str]:
     if not tag_hits and not title_or_desc_ai and not generation_text and not technology_text:
         return None, ""
     if not generation_hits and not technology_hits and NEGATIVE_ONLY.search(text):
+        return None, ""
+    if (
+        FINANCE_DISCUSSION_TERM.search(text)
+        and not AI_APPLICATION_STRONG_TERM.search(text)
+        and not generation_text
+    ):
         return None, ""
 
     technology_score = 0
@@ -570,10 +668,47 @@ def classify_three_c(video: Video, tags: list[str]) -> tuple[str | None, str]:
     return None, ""
 
 
+def classify_podcast(
+    video: Video,
+    tags: list[str],
+    *,
+    official: bool = False,
+) -> tuple[bool, str]:
+    """Identify video podcasts while keeping official curation separate from title heuristics."""
+    if official:
+        return True, "B站官方视频播客专区收录"
+    if PODCAST_EXPLICIT_TERM.search(video.title):
+        return True, "标题明确标注视频播客"
+    if any(PODCAST_STRONG_TAG.fullmatch(tag.strip()) for tag in tags):
+        return True, "独立标签明确标注视频播客"
+    campaign_tag = any(PODCAST_EXPLICIT_TERM.search(tag) for tag in tags)
+    conversation_text = f"{video.title} {video.description}"
+    structured_conversation = (
+        video.duration >= 20 * 60
+        and PODCAST_CONVERSATION_TERM.search(conversation_text)
+        and (
+            PODCAST_EPISODE_TERM.search(video.title)
+            or PODCAST_ROLE_TERM.search(video.description)
+        )
+    )
+    if structured_conversation:
+        return True, "长对谈且有期数、主播或嘉宾结构"
+    if (
+        campaign_tag
+        and video.duration >= 20 * 60
+        and (
+            PODCAST_CONVERSATION_TERM.search(conversation_text)
+            or PODCAST_ROLE_TERM.search(video.description)
+        )
+    ):
+        return True, "播客专题标签且具备长对谈或主持/嘉宾结构"
+    return False, ""
+
+
 def extract_product_client_tags(
     video: Video,
     tags: list[str],
-    business_category: str,
+    business_category: str | None,
 ) -> list[str]:
     """Extract named products or explicitly disclosed client brands."""
     secondary_evidence = f"{video.description} {' '.join(tags)}"
@@ -584,6 +719,18 @@ def extract_product_client_tags(
         secondary_match = pattern.search(secondary_evidence)
         match = title_match or secondary_match
         if not match:
+            continue
+        if (
+            name == "Apple"
+            and match.group(0) == "苹果"
+            and business_category != "科技硬件/3C"
+            and not re.search(
+                r"苹果.{0,12}(?:公司|发布|手机|电脑|系统|芯片|产品|设备|AI|智能)|"
+                r"(?:iPhone|iPad|Mac|Vision\s*Pro).{0,12}苹果",
+                evidence,
+                re.IGNORECASE,
+            )
+        ):
             continue
         if (
             not title_match
@@ -672,6 +819,77 @@ def select(videos: list[Video], tags: dict[str, list[str]]) -> list[dict[str, An
     return selected
 
 
+def select_podcast_opportunities(
+    official_videos: list[Video],
+    source_videos: list[tuple[str, list[Video]]],
+    tags: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    """Select official head-page and cross-list podcasts as a non-exclusive opportunity track."""
+    official_by_bvid = {video.bvid: video for video in official_videos}
+    topic_items = {
+        item["bvid"]: item
+        for item in select(
+            dedupe(
+                [
+                    *official_videos[:PODCAST_PAGE_SIZE],
+                    *(video for _, videos in source_videos for video in videos),
+                ]
+            ),
+            tags,
+        )
+    }
+    opportunities: dict[str, dict[str, Any]] = {}
+
+    def add(video: Video, source: str, podcast_reason: str) -> None:
+        item = opportunities.get(video.bvid)
+        if item is None:
+            topic = topic_items.get(video.bvid)
+            if topic:
+                item = {**topic}
+            else:
+                item = {
+                    "position": video.position,
+                    "bvid": video.bvid,
+                    "title": video.title,
+                    "category": video.category,
+                    "owner": video.owner,
+                    "view": video.view,
+                    "like": video.like,
+                    "business_category": None,
+                    "entity_labels": extract_product_client_tags(video, tags.get(video.bvid, []), None),
+                    "three_c_category": None,
+                    "reason": "",
+                    "url": VIDEO_URL.format(bvid=video.bvid),
+                }
+            item["sources"] = []
+            item["podcast_reasons"] = []
+            opportunities[video.bvid] = item
+        if source not in item["sources"]:
+            item["sources"].append(source)
+        if podcast_reason not in item["podcast_reasons"]:
+            item["podcast_reasons"].append(podcast_reason)
+
+    for video in official_videos[:PODCAST_PAGE_SIZE]:
+        add(video, f"视频播客专区 #{video.position}", "B站官方专区头部推荐")
+
+    for source_name, videos in source_videos:
+        for video in videos:
+            official_video = official_by_bvid.get(video.bvid)
+            if official_video:
+                add(
+                    video,
+                    f"视频播客专区 #{official_video.position}",
+                    "B站官方视频播客专区收录",
+                )
+                add(video, f"{source_name} #{video.position}", "同时进入当前热门来源")
+                continue
+            is_podcast, reason = classify_podcast(video, tags.get(video.bvid, []))
+            if is_podcast:
+                add(video, f"{source_name} #{video.position}", reason)
+
+    return list(opportunities.values())
+
+
 def pct(count: int, total: int) -> str:
     """Format one-decimal percentages for summary tables."""
     return f"{(100 * count / total):.1f}%" if total else "—"
@@ -701,7 +919,17 @@ def merge_category(report: dict[str, Any], category: str) -> list[dict[str, Any]
                 continue
             if item["bvid"] not in merged:
                 merged[item["bvid"]] = {**item, "sources": []}
-            merged[item["bvid"]]["sources"].append(f"{source} #{item['position']}")
+            label = f"{source} #{item['position']}"
+            if label not in merged[item["bvid"]]["sources"]:
+                merged[item["bvid"]]["sources"].append(label)
+    for item in report["podcast"]["items"]:
+        if item.get("business_category") != category:
+            continue
+        if item["bvid"] not in merged:
+            merged[item["bvid"]] = {**item, "sources": []}
+        for label in item["sources"]:
+            if label not in merged[item["bvid"]]["sources"]:
+                merged[item["bvid"]]["sources"].append(label)
     return list(merged.values())
 
 
@@ -735,16 +963,47 @@ def render_table(items: list[dict[str, Any]]) -> str:
     )
 
 
+def render_podcast_table(items: list[dict[str, Any]]) -> str:
+    """Render the independent video-podcast opportunity track."""
+    if not items:
+        return "<p>本日未命中。</p>"
+    rows = "".join(
+        "<tr>"
+        f"<td>{x('；'.join(item['sources']))}</td>"
+        f"<td>{x(item.get('business_category') or '泛主题')}</td>"
+        f"<td>{x('；'.join(item['entity_labels']) or '—')}</td>"
+        f"<td><a href=\"{x(item['url'])}\">{x(item['title'])}</a></td>"
+        f"<td>{x(item['owner'])}</td>"
+        f"<td>{x(format(item['view'], ','))}</td>"
+        f"<td>{x('；'.join(item['podcast_reasons']))}</td>"
+        "</tr>"
+        for item in items
+    )
+    return (
+        "<table><colgroup><col width=\"165\"/><col width=\"85\"/><col width=\"145\"/>"
+        "<col width=\"260\"/><col width=\"105\"/><col width=\"85\"/><col width=\"205\"/></colgroup>"
+        "<thead><tr><th background-color=\"light-gray\">来源 / 位置</th>"
+        "<th background-color=\"light-blue\">主题</th>"
+        "<th background-color=\"light-blue\">产品 / 客户标签</th>"
+        "<th background-color=\"light-gray\">视频</th>"
+        "<th background-color=\"light-gray\">UP 主</th>"
+        "<th background-color=\"light-gray\">播放</th>"
+        "<th background-color=\"light-gray\">机会依据</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
 def render_xml(
     report: dict[str, Any],
     *,
     leading_rule: bool = True,
     include_heading: bool = True,
 ) -> str:
-    """Render one date-first section with three mutually exclusive categories."""
+    """Render one date-first section with three topics and one podcast opportunity track."""
     popular = report["popular"]
     ranking = report["ranking"]
     weekly = report["weekly"]
+    podcast = report["podcast"]
     software = merge_category(report, "AI软件")
     hardware = merge_category(report, "科技硬件/3C")
     aigc = merge_category(report, "AIGC内容")
@@ -755,10 +1014,11 @@ def render_xml(
             prefix,
             heading,
             f"<p><b>抓取时间：</b>{x(report['snapshot_at'])}　"
-            f"<b>每周必看：</b>{x(weekly['label'])}</p>",
+            f"<b>每周必看：</b>{x(weekly['label'])}　"
+            f"<b>播客池：</b><a href=\"{x(podcast['zone_url'])}\">官方视频播客专区 {podcast['total_slots']} 支</a></p>",
             "<table><colgroup><col width=\"145\"/><col width=\"75\"/>"
             "<col width=\"105\"/><col width=\"90\"/><col width=\"105\"/><col width=\"90\"/></colgroup>"
-            "<thead><tr><th background-color=\"light-gray\">榜单</th>"
+            "<thead><tr><th background-color=\"light-gray\">来源</th>"
             "<th background-color=\"light-gray\">规模</th>"
             "<th background-color=\"light-blue\">AI 软件</th>"
             "<th background-color=\"light-blue\">科技硬件 / 3C</th>"
@@ -776,20 +1036,30 @@ def render_xml(
             f"<td>{count_category(weekly, 'AI软件')}</td>"
             f"<td>{count_category(weekly, '科技硬件/3C')}</td>"
             f"<td>{count_category(weekly, 'AIGC内容')}</td><td>{weekly['related_count']}</td></tr>",
+            f"<tr><td>视频播客机会</td><td>{podcast['total_slots']}</td>"
+            f"<td>{count_category(podcast, 'AI软件')}</td>"
+            f"<td>{count_category(podcast, '科技硬件/3C')}</td>"
+            f"<td>{count_category(podcast, 'AIGC内容')}</td><td>{podcast['related_count']}</td></tr>",
             "</tbody></table>",
-            f"<p><b>三榜去重：</b>AI 软件 {len(software)} 支，科技硬件 / 3C {len(hardware)} 支，"
-            f"AIGC 内容 {len(aigc)} 支。三类互斥；科技分区只用于召回，不直接作为分类。</p>",
+            f"<p><b>四源去重：</b>AI 软件 {len(software)} 支，科技硬件 / 3C {len(hardware)} 支，"
+            f"AIGC 内容 {len(aigc)} 支；视频播客机会 {podcast['related_count']} 支，其中与三个主题重叠 "
+            f"{podcast['topic_overlap_count']} 支。三个主题互斥，播客是可重叠的内容形态；科技分区只用于召回。</p>",
             f"<h2>AI 软件（{len(software)} 支）</h2>",
             render_table(software),
             f"<h2>科技硬件 / 3C（{len(hardware)} 支）</h2>",
             render_table(hardware),
             f"<h2>AIGC 内容（{len(aigc)} 支）</h2>",
             render_table(aigc),
+            f"<h2>视频播客机会（{podcast['related_count']} 支）</h2>",
+            render_podcast_table(podcast["items"]),
             "<p><b>口径：</b>模型、智能体、工具、教程、软件和 AI 编程归入 AI 软件；"
             "AI 设备、机器人、消费数码、创客工程、机械航模和航空航天归入科技硬件 / 3C；"
             "AI 视频、音乐、动画、短剧、配音和生成工具成片归入 AIGC 内容。"
             "“客户”标签仅用于标题、简介或标签明确披露合作、赞助或联合出品的品牌；其他命中只标产品/品牌。"
-            "反诈提醒、禁用声明和“不是 AI”等偶然命中排除。</p>",
+            "反诈提醒、禁用声明和“不是 AI”等偶然命中排除。"
+            "视频播客机会包括 B站官方视频播客专区头部 12 支，以及同时进入综合热门、排行榜或每周必看的官方收录播客；"
+            "专区之外仅在标题或独立标签明确标注播客，或长对谈同时具备期数、主播/嘉宾结构时纳入；活动标签不能单独作为结论。"
+            "专区位置是编辑排序，不冒充播放量排名。</p>",
         ]
     )
 
@@ -799,8 +1069,9 @@ def render_document(report: dict[str, Any]) -> str:
     return "".join(
         [
             "<title>B站 AI 热门日报</title>",
-            "<p>每日记录综合热门、全站排行榜和每周必看中的 AI 软件、科技硬件 / 3C 与 AIGC 内容，"
-            "并标注可识别的产品、品牌和明确披露的客户。科技分区仅作为候选池。</p>",
+            "<p>每日记录综合热门、全站排行榜、每周必看和视频播客机会中的 AI 软件、"
+            "科技硬件 / 3C 与 AIGC 内容，并标注可识别的产品、品牌和明确披露的客户。"
+            "视频播客是可与三个主题重叠的内容形态，科技分区仅作为候选池。</p>",
             render_xml(report, leading_rule=False),
         ]
     )
@@ -1160,13 +1431,21 @@ def overwrite_report(doc: str, date: str, xml: str) -> str:
 
 
 def collect(max_popular_pages: int) -> dict[str, Any]:
-    """Collect, tag, classify, and aggregate all three Bilibili lists."""
+    """Collect, tag, classify, and aggregate three lists plus podcast opportunities."""
     client = BilibiliClient()
     weekly, weekly_slots, weekly_label, weekly_number = fetch_weekly(client)
     popular, popular_slots = fetch_popular(client, max_popular_pages)
     ranking, ranking_slots = fetch_ranking(client)
-    tags, tag_errors = enrich(client, [popular, ranking, weekly])
-    tag_total = len({video.bvid for group in [popular, ranking, weekly] for video in group})
+    podcast_playlist, podcast_slots = fetch_podcast_playlist(client)
+    podcast_head = podcast_playlist[:PODCAST_PAGE_SIZE]
+    tags, tag_errors = enrich(client, [popular, ranking, weekly, podcast_head])
+    tag_total = len(
+        {
+            video.bvid
+            for group in [popular, ranking, weekly, podcast_head]
+            for video in group
+        }
+    )
     if len(tag_errors) > max(5, int(tag_total * 0.05)):
         raise CollectionError(
             f"Bilibili tag lookup failed for {len(tag_errors)}/{tag_total} videos; refusing to write an undercount"
@@ -1174,7 +1453,16 @@ def collect(max_popular_pages: int) -> dict[str, Any]:
     popular_selected = select(popular, tags)
     ranking_selected = select(ranking, tags)
     weekly_selected = select(weekly, tags)
-    all_selected = popular_selected + ranking_selected + weekly_selected
+    podcast_selected = select_podcast_opportunities(
+        podcast_playlist,
+        [
+            ("综合热门", popular),
+            ("排行榜", ranking),
+            (f"每周必看第{weekly_number}期", weekly),
+        ],
+        tags,
+    )
+    all_selected = popular_selected + ranking_selected + weekly_selected + podcast_selected
     unique_related = {item["bvid"] for item in all_selected}
     unique_software = {
         item["bvid"] for item in all_selected if item["business_category"] == "AI软件"
@@ -1209,6 +1497,22 @@ def collect(max_popular_pages: int) -> dict[str, Any]:
             "related_count": len(weekly_selected),
             "items": weekly_selected,
         },
+        "podcast": {
+            "zone_url": PODCAST_ZONE_URL,
+            "total_slots": podcast_slots,
+            "unique_videos": len(podcast_playlist),
+            "related_count": len(podcast_selected),
+            "topic_overlap_count": sum(
+                1 for item in podcast_selected if item.get("business_category")
+            ),
+            "head_count": min(PODCAST_PAGE_SIZE, len(podcast_playlist)),
+            "cross_list_count": sum(
+                1
+                for item in podcast_selected
+                if any(not source.startswith("视频播客专区") for source in item["sources"])
+            ),
+            "items": podcast_selected,
+        },
         "unique_related_count": len(unique_related),
         "unique_software_count": len(unique_software),
         "unique_hardware_count": len(unique_hardware),
@@ -1234,18 +1538,42 @@ def load_report(path: str) -> dict[str, Any]:
         raise CollectionError("Imported report has an invalid snapshot timestamp")
     categories = {"AI软件", "科技硬件/3C", "AIGC内容"}
     all_items: list[dict[str, Any]] = []
-    for source in ["popular", "ranking", "weekly"]:
+    for source in ["popular", "ranking", "weekly", "podcast"]:
         group = payload.get(source)
         if not isinstance(group, dict) or not isinstance(group.get("items"), list):
             raise CollectionError(f"Imported report is missing {source} items")
         if not isinstance(group.get("total_slots"), int) or group["total_slots"] <= 0:
             raise CollectionError(f"Imported report has an invalid {source} list size")
         for item in group["items"]:
-            if not isinstance(item, dict) or item.get("business_category") not in categories:
+            if not isinstance(item, dict):
+                raise CollectionError(f"Imported report has an invalid {source} item")
+            valid_category = item.get("business_category") in categories
+            if source == "podcast" and item.get("business_category") is None:
+                valid_category = True
+            if not valid_category:
                 raise CollectionError(f"Imported report has an invalid {source} category")
             if not item.get("bvid") or not item.get("url"):
                 raise CollectionError(f"Imported report has an incomplete {source} item")
+            if source == "podcast" and (
+                not isinstance(item.get("sources"), list)
+                or not isinstance(item.get("podcast_reasons"), list)
+            ):
+                raise CollectionError("Imported report has incomplete podcast evidence")
         all_items.extend(group["items"])
+    podcast = payload["podcast"]
+    if not isinstance(podcast.get("zone_url"), str) or not podcast["zone_url"]:
+        raise CollectionError("Imported report has an invalid podcast-zone URL")
+    if podcast.get("related_count") != len(podcast["items"]):
+        raise CollectionError("Imported report failed the podcast opportunity count check")
+    podcast_overlap = sum(
+        1 for item in podcast["items"] if item.get("business_category") in categories
+    )
+    if podcast.get("topic_overlap_count") != podcast_overlap:
+        raise CollectionError("Imported report failed the podcast topic-overlap check")
+    if not isinstance(podcast.get("head_count"), int) or podcast["head_count"] <= 0:
+        raise CollectionError("Imported report has an invalid podcast head count")
+    if not isinstance(podcast.get("cross_list_count"), int):
+        raise CollectionError("Imported report has an invalid podcast cross-list count")
     unique_by_category = {
         category: {
             item["bvid"] for item in all_items if item["business_category"] == category
@@ -1347,6 +1675,16 @@ def main() -> int:
                 "software_count": count_category(report["weekly"], "AI软件"),
                 "hardware_count": count_category(report["weekly"], "科技硬件/3C"),
                 "aigc_count": count_category(report["weekly"], "AIGC内容"),
+            },
+            "podcast": {
+                "total": report["podcast"]["total_slots"],
+                "opportunity_count": report["podcast"]["related_count"],
+                "topic_overlap_count": report["podcast"]["topic_overlap_count"],
+                "head_count": report["podcast"]["head_count"],
+                "cross_list_count": report["podcast"]["cross_list_count"],
+                "software_count": count_category(report["podcast"], "AI软件"),
+                "hardware_count": count_category(report["podcast"], "科技硬件/3C"),
+                "aigc_count": count_category(report["podcast"], "AIGC内容"),
             },
             "unique_related_count": report["unique_related_count"],
             "unique_software_count": report["unique_software_count"],

@@ -1,4 +1,4 @@
 interface:
-  display_name: "B站 AI 热门日报"
-  short_description: "追踪 AI、科技硬件 / 3C 与 AIGC，并识别产品或客户"
-  default_prompt: "使用 $track-bilibili-ai-hot 抓取当前 B 站榜单，区分 AI 软件、科技硬件 / 3C 与 AIGC 内容，覆盖消费数码、创客工程和航空航天，标注产品、品牌和明确披露的客户，并以写入和回读验证当天飞书日报作为最后一步。"
+  display_name: "B站 AI / 科技与播客日报"
+  short_description: "追踪 AI、科技硬件 / 3C、AIGC 与视频播客机会"
+  default_prompt: "使用 $track-bilibili-ai-hot 抓取当前 B 站三榜和官方视频播客专区，区分 AI 软件、科技硬件 / 3C 与 AIGC 内容，另列可重叠的视频播客机会，标注产品、品牌和明确披露的客户，并以写入和回读验证当天飞书日报作为最后一步。"
