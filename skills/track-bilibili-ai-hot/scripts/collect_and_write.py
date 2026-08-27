@@ -1007,7 +1007,13 @@ def verify_lark_user() -> None:
         raise CollectionError("Feishu user identity is not ready or verified")
 
 
-def write_report(doc: str, date: str, snapshot_at: str, xml: str) -> str:
+def write_report(
+    doc: str,
+    date: str,
+    snapshot_at: str,
+    xml: str,
+    weekly_checked: bool,
+) -> str:
     """Append one idempotent report section and verify it by keyword lookup."""
     verify_lark_user()
     existing = run_lark(
@@ -1034,7 +1040,7 @@ def write_report(doc: str, date: str, snapshot_at: str, xml: str) -> str:
         ["docs", "+update", "--as", "user", "--doc", doc, "--command", "append", "--content", "-"],
         stdin=xml,
     )
-    verify_report_section(doc, date, snapshot_at)
+    verify_report_section(doc, date, snapshot_at, weekly_checked)
     return "written"
 
 
@@ -1113,7 +1119,12 @@ def section_body_ids(content: str, date: str) -> list[str]:
     return [str(block_id) for block_id in ids]
 
 
-def verify_report_section(doc: str, date: str, snapshot_at: str) -> None:
+def verify_report_section(
+    doc: str,
+    date: str,
+    snapshot_at: str,
+    weekly_checked: bool,
+) -> None:
     """Verify newest-first placement, the four H2 sections, and podcast table columns."""
     outline = run_lark(
         [
@@ -1179,6 +1190,7 @@ def verify_report_section(doc: str, date: str, snapshot_at: str) -> None:
         "主题",
         "播放",
         "机会依据",
+        "每周必看第" if weekly_checked else "本次未检查（每周五 18:00 更新）",
     ]
     missing = [marker for marker in required_markers if marker not in section_text]
     if missing:
@@ -1214,7 +1226,13 @@ def upsert_report(doc: str, report: dict[str, Any]) -> str:
     heading_id = find_date_heading_id(outline_content, date)
     if not heading_id:
         if not headings:
-            return write_report(doc, date, report["snapshot_at"], render_xml(report))
+            return write_report(
+                doc,
+                date,
+                report["snapshot_at"],
+                render_xml(report),
+                report["weekly"]["checked"],
+            )
         anchor_id = report_anchor_id(doc, document_id)
         run_lark(
             [
@@ -1233,7 +1251,12 @@ def upsert_report(doc: str, report: dict[str, Any]) -> str:
             ],
             stdin=render_xml(report, leading_rule=False),
         )
-        verify_report_section(doc, date, report["snapshot_at"])
+        verify_report_section(
+            doc,
+            date,
+            report["snapshot_at"],
+            report["weekly"]["checked"],
+        )
         return "written"
 
     section = run_lark(
@@ -1308,18 +1331,29 @@ def upsert_report(doc: str, report: dict[str, Any]) -> str:
             ]
         )
 
-    verify_report_section(doc, date, report["snapshot_at"])
+    verify_report_section(
+        doc,
+        date,
+        report["snapshot_at"],
+        report["weekly"]["checked"],
+    )
     return "updated"
 
 
-def overwrite_report(doc: str, date: str, snapshot_at: str, xml: str) -> str:
+def overwrite_report(
+    doc: str,
+    date: str,
+    snapshot_at: str,
+    xml: str,
+    weekly_checked: bool,
+) -> str:
     """Replace the tracker once when migrating it to the date-first structure."""
     verify_lark_user()
     run_lark(
         ["docs", "+update", "--as", "user", "--doc", doc, "--command", "overwrite", "--content", "-"],
         stdin=xml,
     )
-    verify_report_section(doc, date, snapshot_at)
+    verify_report_section(doc, date, snapshot_at, weekly_checked)
     return "overwritten"
 
 
@@ -1576,11 +1610,23 @@ def main() -> int:
         status = "dry_run"
         if args.overwrite:
             xml = render_document(report)
-            status = overwrite_report(args.doc, report["date"], report["snapshot_at"], xml)
+            status = overwrite_report(
+                args.doc,
+                report["date"],
+                report["snapshot_at"],
+                xml,
+                report["weekly"]["checked"],
+            )
         elif args.upsert:
             status = upsert_report(args.doc, report)
         elif args.write:
-            status = write_report(args.doc, report["date"], report["snapshot_at"], xml)
+            status = write_report(
+                args.doc,
+                report["date"],
+                report["snapshot_at"],
+                xml,
+                report["weekly"]["checked"],
+            )
         output = {
             "ok": True,
             "status": status,
