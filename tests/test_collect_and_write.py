@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime
 from pathlib import Path
 import sys
 import unittest
@@ -104,6 +105,7 @@ class PodcastClassificationTests(unittest.TestCase):
             "popular": {"total_slots": 500, "related_count": 0, "items": []},
             "ranking": {"total_slots": 100, "related_count": 0, "items": []},
             "weekly": {
+                "checked": True,
                 "number": 342,
                 "label": "第 342 期",
                 "total_slots": 30,
@@ -121,10 +123,51 @@ class PodcastClassificationTests(unittest.TestCase):
 
         rendered = MODULE.render_xml(report)
 
-        self.assertIn("播客候选池：</b>三榜去重 580 支", rendered)
-        self.assertIn("<b>三榜去重：</b>", rendered)
+        self.assertIn("播客候选池：</b>本次三源去重 580 支", rendered)
+        self.assertIn("<b>本次三源去重：</b>", rendered)
         self.assertNotIn("<tr><td>视频播客机会</td>", rendered)
         self.assertNotIn("官方视频播客专区", rendered)
+
+    def test_weekly_auto_mode_only_fetches_after_friday_18(self) -> None:
+        thursday_evening = datetime(2026, 8, 27, 18, 0, tzinfo=MODULE.TIMEZONE)
+        friday_morning = datetime(2026, 8, 28, 10, 0, tzinfo=MODULE.TIMEZONE)
+        friday_evening = datetime(2026, 8, 28, 18, 0, tzinfo=MODULE.TIMEZONE)
+
+        self.assertFalse(MODULE.should_fetch_weekly(thursday_evening, "auto"))
+        self.assertFalse(MODULE.should_fetch_weekly(friday_morning, "auto"))
+        self.assertTrue(MODULE.should_fetch_weekly(friday_evening, "auto"))
+        self.assertTrue(MODULE.should_fetch_weekly(thursday_evening, "fetch"))
+        self.assertFalse(MODULE.should_fetch_weekly(friday_evening, "skip"))
+
+    def test_unchecked_weekly_is_reported_as_not_checked(self) -> None:
+        report = {
+            "date": "2026-08-27",
+            "snapshot_at": "2026-08-27 18:00:00 CST",
+            "popular": {"total_slots": 500, "related_count": 0, "items": []},
+            "ranking": {"total_slots": 100, "related_count": 0, "items": []},
+            "weekly": {
+                "checked": False,
+                "number": 0,
+                "label": "本次未检查",
+                "total_slots": 0,
+                "related_count": 0,
+                "items": [],
+            },
+            "podcast": {
+                "candidate_count": 550,
+                "related_count": 0,
+                "topic_overlap_count": 0,
+                "multi_source_count": 0,
+                "items": [],
+            },
+        }
+
+        rendered = MODULE.render_xml(report)
+
+        self.assertIn("每周必看（本次未检查）", rendered)
+        self.assertIn("每周五 18:00 更新", rendered)
+        self.assertIn("<b>本次两源去重：</b>", rendered)
+        self.assertNotIn("每周必看第 0 期", rendered)
 
 
 if __name__ == "__main__":

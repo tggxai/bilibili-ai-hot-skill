@@ -469,6 +469,15 @@ def fetch_weekly(client: BilibiliClient) -> tuple[list[Video], int, str, int]:
     return dedupe(videos), len(items), label, number
 
 
+def should_fetch_weekly(now: datetime, mode: str) -> bool:
+    """Resolve the weekly-list cadence, with an explicit override for recovery runs."""
+    if mode == "fetch":
+        return True
+    if mode == "skip":
+        return False
+    return now.weekday() == 4 and now.hour >= 18
+
+
 def fetch_tags(client: BilibiliClient, bvid: str) -> list[str]:
     """Fetch Bilibili tags for one video."""
     try:
@@ -797,8 +806,11 @@ def merge_category(report: dict[str, Any], category: str) -> list[dict[str, Any]
     sources = [
         ("综合热门", report["popular"]["items"]),
         ("排行榜", report["ranking"]["items"]),
-        (f"每周必看第{report['weekly']['number']}期", report["weekly"]["items"]),
     ]
+    if report["weekly"]["checked"]:
+        sources.append(
+            (f"每周必看第{report['weekly']['number']}期", report["weekly"]["items"])
+        )
     for source, items in sources:
         for item in items:
             if item["business_category"] != category:
@@ -887,13 +899,19 @@ def render_xml(
     aigc = merge_category(report, "AIGC内容")
     prefix = "<hr/>" if leading_rule else ""
     heading = f"<h1>{x(report['date'])}</h1>" if include_heading else ""
+    weekly_summary = weekly["label"] if weekly["checked"] else "本次未检查（每周五 18:00 更新）"
+    weekly_source = (
+        f"每周必看第 {weekly['number']} 期" if weekly["checked"] else "每周必看（本次未检查）"
+    )
+    weekly_size = weekly["total_slots"] if weekly["checked"] else "—"
+    source_scope = "三源" if weekly["checked"] else "两源"
     return "".join(
         [
             prefix,
             heading,
             f"<p><b>抓取时间：</b>{x(report['snapshot_at'])}　"
-            f"<b>每周必看：</b>{x(weekly['label'])}　"
-            f"<b>播客候选池：</b>三榜去重 {podcast['candidate_count']} 支</p>",
+            f"<b>每周必看：</b>{x(weekly_summary)}　"
+            f"<b>播客候选池：</b>本次{source_scope}去重 {podcast['candidate_count']} 支</p>",
             "<table><colgroup><col width=\"145\"/><col width=\"75\"/>"
             "<col width=\"105\"/><col width=\"90\"/><col width=\"105\"/><col width=\"90\"/></colgroup>"
             "<thead><tr><th background-color=\"light-gray\">来源</th>"
@@ -910,15 +928,15 @@ def render_xml(
             f"<td>{count_category(ranking, 'AI软件')}</td>"
             f"<td>{count_category(ranking, '科技硬件/3C')}</td>"
             f"<td>{count_category(ranking, 'AIGC内容')}</td><td>{ranking['related_count']}</td></tr>",
-            f"<tr><td>每周必看第 {weekly['number']} 期</td><td>{weekly['total_slots']}</td>"
+            f"<tr><td>{x(weekly_source)}</td><td>{weekly_size}</td>"
             f"<td>{count_category(weekly, 'AI软件')}</td>"
             f"<td>{count_category(weekly, '科技硬件/3C')}</td>"
             f"<td>{count_category(weekly, 'AIGC内容')}</td><td>{weekly['related_count']}</td></tr>",
             "</tbody></table>",
-            f"<p><b>三榜去重：</b>AI 软件 {len(software)} 支，科技硬件 / 3C {len(hardware)} 支，"
+            f"<p><b>本次{source_scope}去重：</b>AI 软件 {len(software)} 支，科技硬件 / 3C {len(hardware)} 支，"
             f"AIGC 内容 {len(aigc)} 支；视频播客机会 {podcast['related_count']} 支，其中与三个主题重叠 "
             f"{podcast['topic_overlap_count']} 支、同时出现在多个榜单 {podcast['multi_source_count']} 支。"
-            "三个主题互斥，播客是从三榜候选中识别的可重叠内容形态；科技分区只用于召回。</p>",
+            "三个主题互斥，播客是从本次实际来源中识别的可重叠内容形态；科技分区只用于召回。</p>",
             f"<h2>AI 软件（{len(software)} 支）</h2>",
             render_table(software),
             f"<h2>科技硬件 / 3C（{len(hardware)} 支）</h2>",
@@ -932,7 +950,7 @@ def render_xml(
             "AI 视频、音乐、动画、短剧、配音和生成工具成片归入 AIGC 内容。"
             "“客户”标签仅用于标题、简介或标签明确披露合作、赞助或联合出品的品牌；其他命中只标产品/品牌。"
             "反诈提醒、禁用声明和“不是 AI”等偶然命中排除。"
-            "视频播客机会只从当天综合热门、排行榜和每周必看中识别：标题或独立标签明确标注播客，"
+            "视频播客机会只从本次实际检查的综合热门、排行榜和每周必看中识别：标题或独立标签明确标注播客，"
             "或至少 20 分钟且同时具备对谈与期数、主播/嘉宾结构时纳入；时长和活动标签都不能单独作为结论。"
             "历史官方专区样本仅用于校准规则，不作为日报数据源，也不会固定写入专区视频。</p>",
         ]
@@ -1305,17 +1323,23 @@ def overwrite_report(doc: str, date: str, snapshot_at: str, xml: str) -> str:
     return "overwritten"
 
 
-def collect(max_popular_pages: int) -> dict[str, Any]:
+def collect(max_popular_pages: int, weekly_mode: str = "auto") -> dict[str, Any]:
     """Collect, tag, classify, and aggregate three lists plus podcast opportunities."""
+    now = datetime.now(TIMEZONE)
     client = BilibiliClient()
-    weekly, weekly_slots, weekly_label, weekly_number = fetch_weekly(client)
+    weekly_checked = should_fetch_weekly(now, weekly_mode)
+    if weekly_checked:
+        weekly, weekly_slots, weekly_label, weekly_number = fetch_weekly(client)
+    else:
+        weekly, weekly_slots, weekly_label, weekly_number = [], 0, "本次未检查", 0
     popular, popular_slots = fetch_popular(client, max_popular_pages)
     ranking, ranking_slots = fetch_ranking(client)
     source_videos = [
         ("综合热门", popular),
         ("全站排行榜", ranking),
-        (f"每周必看第{weekly_number}期", weekly),
     ]
+    if weekly_checked:
+        source_videos.append((f"每周必看第{weekly_number}期", weekly))
     podcast_candidates = dedupe([video for _, videos in source_videos for video in videos])
     tags, tag_errors = enrich(client, [popular, ranking, weekly])
     tag_total = len(
@@ -1344,7 +1368,6 @@ def collect(max_popular_pages: int) -> dict[str, Any]:
     unique_aigc = {
         item["bvid"] for item in all_selected if item["business_category"] == "AIGC内容"
     }
-    now = datetime.now(TIMEZONE)
     return {
         "date": now.strftime("%Y-%m-%d"),
         "snapshot_at": now.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -1361,6 +1384,7 @@ def collect(max_popular_pages: int) -> dict[str, Any]:
             "items": ranking_selected,
         },
         "weekly": {
+            "checked": weekly_checked,
             "number": weekly_number,
             "label": weekly_label,
             "total_slots": weekly_slots,
@@ -1408,7 +1432,7 @@ def load_report(path: str) -> dict[str, Any]:
         group = payload.get(source)
         if not isinstance(group, dict) or not isinstance(group.get("items"), list):
             raise CollectionError(f"Imported report is missing {source} items")
-        if source != "podcast" and (
+        if source not in {"podcast", "weekly"} and (
             not isinstance(group.get("total_slots"), int) or group["total_slots"] <= 0
         ):
             raise CollectionError(f"Imported report has an invalid {source} list size")
@@ -1438,6 +1462,26 @@ def load_report(path: str) -> dict[str, Any]:
             ):
                 raise CollectionError("Imported podcast item came from outside the three hot lists")
         all_items.extend(group["items"])
+    weekly = payload["weekly"]
+    if not isinstance(weekly.get("checked"), bool):
+        raise CollectionError("Imported report is missing the weekly check status")
+    if weekly["checked"]:
+        if (
+            not isinstance(weekly.get("total_slots"), int)
+            or weekly["total_slots"] <= 0
+            or not isinstance(weekly.get("number"), int)
+            or weekly["number"] <= 0
+        ):
+            raise CollectionError("Imported report has invalid checked weekly data")
+    elif any(
+        [
+            weekly.get("total_slots") != 0,
+            weekly.get("related_count") != 0,
+            bool(weekly["items"]),
+            weekly.get("number") != 0,
+        ]
+    ):
+        raise CollectionError("Imported report has data for an unchecked weekly source")
     podcast = payload["podcast"]
     if (
         not isinstance(podcast.get("candidate_count"), int)
@@ -1501,6 +1545,12 @@ def parse_args() -> argparse.Namespace:
         help="Safety cap for 综合热门 pagination (default: 50)",
     )
     parser.add_argument(
+        "--weekly-mode",
+        choices=["auto", "fetch", "skip"],
+        default="auto",
+        help="每周必看 cadence: auto=Friday 18:00+, fetch=force, skip=omit",
+    )
+    parser.add_argument(
         "--report-input",
         help="Use a complete report JSON from another collector; pass - to read stdin",
     )
@@ -1520,7 +1570,7 @@ def main() -> int:
         report = (
             load_report(args.report_input)
             if args.report_input
-            else collect(args.max_popular_pages)
+            else collect(args.max_popular_pages, args.weekly_mode)
         )
         xml = render_xml(report)
         status = "dry_run"
@@ -1552,6 +1602,7 @@ def main() -> int:
                 "aigc_count": count_category(report["ranking"], "AIGC内容"),
             },
             "weekly": {
+                "checked": report["weekly"]["checked"],
                 "number": report["weekly"]["number"],
                 "total": report["weekly"]["total_slots"],
                 "related_count": report["weekly"]["related_count"],
