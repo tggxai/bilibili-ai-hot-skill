@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import html
-import http.cookies
 import json
 import os
 import re
@@ -339,28 +338,17 @@ class BilibiliClient:
 
     def refresh_cookie(self) -> None:
         """Refresh the anonymous fingerprint cookie used by guarded endpoints."""
-        request = urllib.request.Request(
-            "https://www.bilibili.com/",
-            headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml"},
+        payload = self._request_json(
+            "https://api.bilibili.com/x/frontend/finger/spi",
+            use_cookie=False,
         )
-        try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                response.read()
-                set_cookie_headers = response.headers.get_all("Set-Cookie") or []
-        except urllib.error.HTTPError as exc:
-            raise CollectionError(f"HTTP {exc.code} while starting Bilibili session") from exc
-        values: dict[str, str] = {}
-        for header in set_cookie_headers:
-            parsed = http.cookies.SimpleCookie()
-            parsed.load(header)
-            values.update({name: morsel.value for name, morsel in parsed.items()})
-        if not values.get("buvid3"):
-            raise CollectionError("Bilibili homepage returned no anonymous session cookie")
-        parts = [f"buvid3={values['buvid3']}"]
-        if values.get("b_nut"):
-            parts.append(f"b_nut={values['b_nut']}")
+        data = payload.get("data") or {}
+        buvid3 = str(data.get("b_3") or "")
+        buvid4 = str(data.get("b_4") or "")
+        if payload.get("code") != 0 or not buvid3 or not buvid4:
+            raise CollectionError("Bilibili fingerprint endpoint returned incomplete cookies")
         with self._lock:
-            self._cookie = "; ".join(parts)
+            self._cookie = f"buvid3={buvid3}; buvid4={buvid4}"
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """GET a Bilibili JSON endpoint and retry transient or risk-control failures."""
@@ -391,7 +379,7 @@ class BilibiliClient:
         url = path if path.startswith("https://") else f"{API}{path}"
         headers = {
             "User-Agent": UA,
-            "Referer": "https://www.bilibili.com/",
+            "Referer": "https://www.bilibili.com/v/popular/all/",
             "Accept": "application/json, text/plain, */*",
         }
         if use_cookie:
